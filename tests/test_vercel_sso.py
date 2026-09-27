@@ -52,6 +52,14 @@ class VercelSSOTests(unittest.TestCase):
             with patch.dict(os.environ, {"VERCEL_ENV": "preview"}):
                 self.assertEqual(self.request("GET", "/me", host="crm-ecom-preview-orange-even-projects.vercel.app")[0], 200)
 
+    def test_google_login_never_inherits_preview_vercel_admin(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(server, "DB_PATH", Path(directory) / "crm.sqlite3"), patch.dict(os.environ, {"VERCEL": "1", "VERCEL_ENV": "preview", "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test", "CRM_ADMIN_GOOGLE_EMAIL": "owner@example.com"}):
+            server.init_db()
+            host = "crm-ecom-git-supabase-google-migration-orange-even-projects.vercel.app"
+            self.assertEqual(self.request("GET", "/me", host=host)[0], 401)
+            self.assertEqual(self.request("GET", "/auth/config", host=host)[0], 200)
+            self.assertEqual(self.request("GET", "/me", host="unlisted-project.vercel.app")[0], 403)
+
 
 if __name__ == "__main__":
     unittest.main()
