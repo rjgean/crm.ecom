@@ -30,7 +30,7 @@ Use HTTPS em um proxy reverso, `COOKIE_SECURE=1`, banco SQLite em volume persist
 
 ### Publicar na Vercel
 
-O projeto inclui `app.py` (entrada WSGI), `pyproject.toml` e `requirements.txt`. Importe o repositório na Vercel com a raiz do projeto como diretório raiz, sem configurar comando de build. Conecte um banco **Turso Cloud persistente** (a integração no marketplace pode fornecer as duas variáveis `TURSO_*`). Em **Project → Settings → Environment Variables**, configure para Production e Preview:
+O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, `vercel.json` (preset Flask) e `public/` com os arquivos da interface para a CDN. Importe o repositório na Vercel com a raiz do projeto como diretório raiz, sem configurar comando de build. Ao modificar `static/`, copie as alterações equivalentes para `public/` antes de publicar. Conecte um banco **Turso Cloud persistente** (a integração no marketplace pode fornecer as duas variáveis `TURSO_*`). Em **Project → Settings → Environment Variables**, configure para Production e Preview:
 
 | Variável | Uso |
 | --- | --- |
