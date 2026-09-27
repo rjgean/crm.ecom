@@ -80,47 +80,53 @@ class CRMTests(unittest.TestCase):
                 self.assertEqual(status, 429)
                 self.assertIn("Limite gratuito", message["error"])
 
-    def test_collaborator_whatsapp_id_is_admin_issued_and_expires(self):
+    def test_collaborator_whatsapp_token_is_admin_issued_and_expires(self):
         self.login()
         phone = "5521999988777"
         expiry = (server.datetime.now(server.timezone.utc) + server.timedelta(days=2)).isoformat()
         self.assertEqual(self.request("POST", "/access/settings", {"admin_whatsapp": "21988887777"})[0], 200)
         self.assertEqual(self.request("POST", "/access/collaborators", {"phone": "21999988777", "expires_at": expiry})[0], 201)
-        with patch.dict(os.environ, {"CRM_ACCESS_SECRET": "a-very-long-local-key-used-for-access-testing"}), patch.object(server, "request_json") as external:
-            status, response = self.request("POST", "/access/request", {"phone": phone})
-            self.assertEqual(status, 200)
-            self.assertNotIn("code", json.dumps(response))
-            self.assertIn("wa.me/5521988887777", response["whatsapp_url"])
-            self.assertEqual(self.request("POST", "/access/request", {"phone": "21999980000"})[0], 200)
+        with patch.dict(os.environ, {"CRM_ACCESS_SECRET": "a-very-long-local-key-used-for-access-testing"}):
+            self.assertEqual(self.request("POST", "/access/request", {"phone": phone})[0], 404)
             with server.db() as con:
-                self.assertEqual(con.execute("SELECT COUNT(*) FROM phone_access_requests").fetchone()[0], 1)
                 identifier = con.execute("SELECT id FROM collaborator_phones WHERE phone=?", (phone,)).fetchone()[0]
             self.assertEqual(self.request("POST", f"/access/collaborators/{identifier}/issue", {}, with_csrf=False)[0], 403)
             status, result = self.request("POST", f"/access/collaborators/{identifier}/issue", {})
             self.assertEqual(status, 200)
             message = urllib.parse.unquote(result["whatsapp_url"].split("text=", 1)[1])
             self.assertTrue(result["whatsapp_url"].startswith("https://wa.me/" + phone))
-            code = message.split("é ", 1)[1][:8]
-            self.assertEqual(self.request("POST", "/access/verify", {"phone": "21999980000", "code": code})[0], 401)
-            self.assertEqual(self.request("POST", "/access/verify", {"phone": phone, "code": "99999999"})[0], 401)
+            code = message.split("é ", 1)[1][:14]
+            self.assertEqual(len(code), 14)
+            self.assertEqual(self.request("POST", "/access/verify", {"code": "XXXX-XXXX-XXXX"})[0], 401)
             with server.db() as con:
-                self.assertEqual(con.execute("SELECT attempts FROM phone_challenges WHERE phone=?", (phone,)).fetchone()[0], 1)
                 self.assertNotIn(code, con.execute("SELECT code_hash FROM phone_challenges WHERE phone=?", (phone,)).fetchone()[0])
-            self.assertEqual(self.request("POST", "/access/verify", {"phone": phone, "code": code})[0], 200)
-            self.assertEqual(self.request("POST", "/access/verify", {"phone": phone, "code": code})[0], 401)
+            self.assertEqual(self.request("POST", "/access/verify", {"code": code})[0], 200)
+            self.assertEqual(self.request("POST", "/access/verify", {"code": code})[0], 401)
             status, me = self.request("GET", "/me")
             self.assertEqual((status, me["role"]), (200, "collaborator"))
             self.csrf = me["csrf"]
             self.assertEqual(self.request("POST", "/integrations", {"service": "groq", "token": "not-allowed-secret"})[0], 403)
             self.assertEqual(self.request("GET", "/access/collaborators")[0], 403)
-            self.assertEqual(self.request("GET", "/leads")[0], 200)
             with server.db() as con:
                 con.execute("UPDATE collaborator_phones SET expires_at=? WHERE phone=?", (server.now(), phone))
             self.assertEqual(self.request("GET", "/me")[0], 401)
             self.login()
             self.assertEqual(self.request("DELETE", f"/access/collaborators/{identifier}")[0], 200)
-            external.assert_not_called()
 
+    def test_administrator_can_log_in_with_own_whatsapp_token(self):
+        self.login()
+        self.assertEqual(self.request("POST", "/access/settings", {"admin_whatsapp": "21988886666"})[0], 200)
+        with patch.dict(os.environ, {"CRM_ACCESS_SECRET": "a-very-long-local-key-used-for-access-testing"}):
+            self.assertEqual(self.request("POST", "/access/admin/issue", {}, with_csrf=False)[0], 403)
+            status, result = self.request("POST", "/access/admin/issue", {})
+            self.assertEqual(status, 200)
+            self.assertEqual(result["expires_in_seconds"], 3600)
+            code = urllib.parse.unquote(result["whatsapp_url"].split("text=", 1)[1]).split("é ", 1)[1][:14]
+            self.assertEqual(self.request("POST", "/access/verify", {"code": code})[0], 200)
+            status, me = self.request("GET", "/me")
+            self.assertEqual((status, me["role"]), (200, "admin"))
+            self.csrf = me["csrf"]
+            self.assertEqual(self.request("GET", "/access/settings")[0], 200)
     def test_integration_credentials_are_encrypted_and_never_returned(self):
         self.login()
         secret = "apify-test-only-long-secret-123"
