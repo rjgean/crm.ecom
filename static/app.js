@@ -1,9 +1,10 @@
 const root = document.getElementById('app');
-const state = { user: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false };
+const state = { user: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, batchId: null, importPoll: null };
 const stages = [['novo','Novo'],['pesquisado','Pesquisado'],['qualificado','Qualificado'],['contato','Contato iniciado'],['respondeu','Respondeu'],['reuniao','Reunião'],['proposta','Proposta'],['negociacao','Negociação'],['ganho','Ganho'],['perdido','Perdido']];
+const importStatus = {queued:'Na fila',running:'Pesquisando',paused:'Pausado',done:'Concluído',pending:'Aguardando',processing:'Pesquisando',error:'Falhou',skipped:'Ignorado'};
 const statuses = [['incerto','Incerto'],['sem_site_identificado','Sem site identificado'],['apenas_redes','Apenas redes sociais'],['site_sem_loja','Site sem loja'],['marketplace','Marketplace'],['loja_virtual','Loja virtual']];
 const nav = [
-  ['painel','◫','Painel'],['buscar','⌕','Procurar Clientes'],['leads','▤','Meus Leads'],['listas','▦','Listas'],
+  ['painel','◫','Painel'],['buscar','⌕','Procurar Clientes'],['importar','⇧','Importar JSON'],['leads','▤','Meus Leads'],['listas','▦','Listas'],
   ['crm','◇','CRM'],['nichos','◎','Explorar Nichos'],['mensagens','✧','Mensagens'],['historico','◷','Histórico'],
   ['exportacoes','⇩','Exportações'],['analytics','▥','Analytics'],['integracoes','⬡','Integrações'],['configuracoes','⚙','Configurações']
 ];
@@ -44,18 +45,19 @@ function renderLogin() {
   root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Seu próximo cliente começa aqui.</h1><p class="muted">Acesse seu painel de prospecção e vendas.</p><form id="login-form"><label class="field">E-mail<input name="email" type="email" autocomplete="username" required placeholder="seu@email.com"></label><label class="field">Senha<input name="password" type="password" autocomplete="current-password" required placeholder="Sua senha"></label><button class="btn primary full" type="submit">Entrar no painel →</button><div id="login-error" class="muted" role="alert"></div></form></section></main>`;
 }
 function shell() {
-  const n = nav.map(([id,icon,text],idx)=>`${idx===0||idx===5||idx===9?`<div class="nav-group">${idx===0?'Operação':idx===5?'Inteligência':'Gestão'}</div>`:''}<button class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span>${text}</span></button>`).join('');
+  const n = nav.map(([id,icon,text],idx)=>`${idx===0||idx===6||idx===10?`<div class="nav-group">${idx===0?'Operação':idx===6?'Inteligência':'Gestão'}</div>`:''}<button class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span>${text}</span></button>`).join('');
   root.innerHTML=`<div class="scrim" id="scrim"></div><div class="shell"><aside class="sidebar" id="sidebar"><div class="sidebar-head"><div class="logo">C</div><div class="brand">CRM<span>•</span>ECOM</div></div><nav class="nav">${n}</nav><div class="sidebar-foot"><div>Operador<br><strong>${esc(state.user.email)}</strong></div>${state.user.sso?'':'<button class="btn ghost full" data-action="logout">Sair da conta</button>'}</div></aside><div class="main"><header class="topbar"><button class="mobile-toggle" data-action="menu" aria-label="Abrir menu">☰</button><div class="topbar-title"><h1 id="top-title">Painel</h1><small id="top-subtitle">Resumo da sua prospecção</small></div><span class="topbar-badge ${state.user.apify&&state.user.firecrawl?'':'offline'}">${state.user.apify&&state.user.firecrawl?'● Integrações prontas':'● Configuração parcial'}</span></header><main class="page" id="content"></main></div></div><div id="drawer-mount"></div>`;
 }
 function title(name, sub) { document.getElementById('top-title').textContent=name;document.getElementById('top-subtitle').textContent=sub; }
 async function renderView() {
   if (!state.user) return;
+  clearTimeout(state.importPoll);
   state.view=getView();
   if (!nav.some(x=>x[0]===state.view)) state.view='painel';
   shell();loading();
   const selected=document.querySelector(`.nav-link[data-view="${state.view}"]`);selected?.classList.add('active');
   try {
-    ({painel:dashboard,buscar:searchPage,leads:leadsPage,listas:listsPage,crm:crmPage,nichos:nichesPage,mensagens:messagesPage,historico:historyPage,exportacoes:exportPage,analytics:analyticsPage,integracoes:integrationsPage,configuracoes:settingsPage})[state.view]();
+    ({painel:dashboard,buscar:searchPage,importar:importPage,leads:leadsPage,listas:listsPage,crm:crmPage,nichos:nichesPage,mensagens:messagesPage,historico:historyPage,exportacoes:exportPage,analytics:analyticsPage,integracoes:integrationsPage,configuracoes:settingsPage})[state.view]();
   } catch(err) { failure(err); }
 }
 function metric(name,value){return `<div class="metric"><div class="metric-label">${esc(name)}</div><div class="metric-value">${esc(value)}</div></div>`}
@@ -69,7 +71,7 @@ async function dashboard(){
 async function searchPage(){
   title('Procurar Clientes','Encontre empresas por nicho e localização.');
   const el=document.getElementById('content');
-  el.innerHTML=`<div class="section-title"><div><h1>Encontre sua próxima oportunidade</h1><p>Apify encontra negócios; Firecrawl investiga sua presença digital.</p></div></div>${!state.user.apify?'<div class="notice">Configure a chave da Apify em Configurações para iniciar buscas. Você já pode importar CSV, cadastrar empresas e usar o CRM.</div>':''}${!state.user.firecrawl?'<div class="notice">Configure a chave do Firecrawl em Configurações. Campanhas da Apify poderão criar leads, mas o enriquecimento ficará pendente.</div>':''}<section class="panel"><h2>Nova busca</h2><form id="campaign-form" class="form-grid"><label class="field span2">O que você está procurando?<input name="niche" placeholder="Ex.: estética automotiva, moda feminina" required maxlength="100"></label><label class="field">Cidade<input name="city" placeholder="São Gonçalo" required maxlength="100"></label><label class="field">UF<input name="state" placeholder="RJ" required maxlength="2"></label><label class="field">Limite de empresas<input name="limit" type="number" min="1" max="100" value="20" required></label><button class="btn primary" type="submit" ${state.user.apify?'':'disabled'}>⌕ Iniciar busca</button></form><p class="help" style="margin:15px 0 0">A pesquisa gera custos nos serviços conectados. Comece com um limite pequeno. “Sem site identificado” exige conferência antes de abordar o negócio.</p></section><section class="panel" style="margin-top:16px"><div class="panel-head"><h2>Campanhas recentes</h2><button class="link" data-action="refresh-campaigns">Atualizar ↻</button></div><div id="campaigns" class="campaign-list">Carregando…</div></section>`;
+  el.innerHTML=`<div class="section-title"><div><h1>Encontre sua próxima oportunidade</h1><p>Apify encontra negócios; Firecrawl investiga sua presença digital.</p></div></div>${!state.user.apify?'<div class="notice">Configure a chave da Apify em Configurações para iniciar buscas. Você pode importar o JSON extraído por você na Apify e usar o CRM.</div>':''}${!state.user.firecrawl?'<div class="notice">Configure a chave do Firecrawl em Configurações. A importação JSON funcionará, mas a pesquisa de presença digital aguardará a chave.</div>':''}<section class="panel"><h2>Nova busca</h2><form id="campaign-form" class="form-grid"><label class="field span2">O que você está procurando?<input name="niche" placeholder="Ex.: estética automotiva, moda feminina" required maxlength="100"></label><label class="field">Cidade<input name="city" placeholder="São Gonçalo" required maxlength="100"></label><label class="field">UF<input name="state" placeholder="RJ" required maxlength="2"></label><label class="field">Limite de empresas<input name="limit" type="number" min="1" max="100" value="20" required></label><button class="btn primary" type="submit" ${state.user.apify?'':'disabled'}>⌕ Iniciar busca</button></form><p class="help" style="margin:15px 0 0">A pesquisa gera custos nos serviços conectados. Comece com um limite pequeno. “Sem site identificado” exige conferência antes de abordar o negócio.</p></section><section class="panel" style="margin-top:16px"><div class="panel-head"><h2>Campanhas recentes</h2><button class="link" data-action="refresh-campaigns">Atualizar ↻</button></div><div id="campaigns" class="campaign-list">Carregando…</div></section>`;
   loadCampaigns();
 }
 async function loadCampaigns(){
@@ -78,6 +80,26 @@ async function loadCampaigns(){
     el.innerHTML=rows.length?rows.map(c=>`<div class="campaign-card"><div><strong>${esc(c.niche)} · ${esc(c.city)}, ${esc(c.state)}</strong><small>${date(c.created_at)} · limite ${c.limit_count} · encontrados ${c.found} · novos ${c.saved} · enriquecidos ${c.enriched}</small>${c.error?`<small style="color:var(--gold)">${esc(c.error)}</small>`:''}</div><span class="badge ${c.status==='failed'?'red':c.status==='done'?'':'warning'}">${esc(c.status)}</span></div>`).join(''):'<div class="empty">Nenhuma campanha ainda. Use os filtros acima para iniciar.</div>';
     const active=rows.find(c=>['queued','running','enriching'].includes(c.status));
     if(active) setTimeout(async()=>{if(state.view!=='buscar')return;try{if(state.user.serverless)await post(`/campaigns/${active.id}/advance`,{});await loadCampaigns()}catch(e){toast(e.message,true)}},5000);
+  }catch(e){el.textContent=e.message}
+}
+function importPage(){
+  title('Importar JSON','Apify manual e pesquisa Firecrawl passo a passo.');
+  document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Importar empresas da Apify</h1><p>Faça a coleta na sua conta Apify, copie o JSON exportado e cole abaixo. Cada empresa será salva no CRM.</p></div></div>${!state.user.firecrawl?'<div class="notice">Configure a chave do Firecrawl em Configurações para iniciar a pesquisa dos sites. Você já pode importar os leads.</div>':''}<section class="panel"><form id="apify-json-form" class="form-grid"><label class="field span2">Nome da lista<input name="name" value="Empresas importadas da Apify" maxlength="100" required></label><label class="field">Cidade padrão (se faltar no JSON)<input name="city" placeholder="Rio de Janeiro" maxlength="100"></label><label class="field">UF padrão<input name="state" placeholder="RJ" maxlength="2"></label><label class="field span2">JSON exportado da Apify<textarea name="json" rows="12" spellcheck="false" required placeholder='[{"title":"Loja Exemplo","phone":"21999999999","website":"","url":"https://maps.google.com/..."}]'></textarea></label><button class="btn primary" type="submit">Importar empresas e pesquisar com Firecrawl →</button></form><p class="help" style="margin:12px 0 0">Aceita array de empresas ou objeto com items/data; até 500 empresas por importação. Chaves e dados sensíveis não devem estar no JSON colado. A pesquisa avança uma empresa por vez enquanto esta tela estiver aberta; você pode voltar para continuar.</p></section><section class="panel" style="margin-top:16px"><div class="panel-head"><h2>Importações</h2><button class="link" data-action="refresh-imports">Atualizar ↻</button></div><div id="import-list">Carregando…</div></section><section class="panel" id="import-details" style="margin-top:16px"></section>`;
+  loadImportBatches();
+}
+async function loadImportBatches(){
+  const list=document.getElementById('import-list');if(!list)return;
+  try{const rows=await api('/import-apify');if(!document.getElementById('import-list'))return;
+    list.innerHTML=rows.length?rows.map(b=>`<div class="row-item"><button data-import-batch="${b.id}"><strong>${esc(b.name)}</strong><small>${date(b.created_at)} · ${b.enriched}/${b.total} pesquisadas · ${b.failed} falhas</small></button><span class="badge ${b.status==='paused'?'warning':''}">${esc(importStatus[b.status]||b.status)}</span></div>`).join(''):'<div class="empty">Ainda não há importações JSON.</div>';
+    if(rows.length)showImportBatch(state.batchId&&rows.some(b=>b.id===state.batchId)?state.batchId:rows[0].id);
+  }catch(e){list.textContent=e.message}
+}
+async function showImportBatch(id){
+  clearTimeout(state.importPoll);state.batchId=id;
+  const el=document.getElementById('import-details');if(!el)return;
+  try{const b=await api('/import-apify/'+id);if(state.view!=='importar'||state.batchId!==id||!document.getElementById('import-details'))return;
+    el.innerHTML=`<div class="panel-head"><h2>${esc(b.name)}</h2><span class="badge">${esc(importStatus[b.status]||b.status)}</span></div><p class="help">${b.processed} de ${b.total} processadas · ${b.enriched} pesquisadas · ${b.failed} falhas. ${b.error?esc(b.error):''}</p><div class="button-row"><button class="btn" data-list="${b.list_id}">Ver leads desta lista →</button>${b.status==='paused'&&state.user.firecrawl?`<button class="btn primary" data-import-resume="${b.id}">Retomar pesquisa</button>`:''}</div><div style="margin-top:15px">${b.items.map(item=>`<div class="row-item"><button data-lead="${item.lead_id}"><strong>${esc(item.name)}</strong><small>${esc([item.city,item.state].filter(Boolean).join(', '))} · ${esc(label(statuses,item.digital_status))}</small></button><span class="badge ${item.status==='error'?'red':'dim'}">${esc(importStatus[item.status]||item.status)}</span></div>${item.error?`<small class="help">${esc(item.error)}</small>`:''}`).join('')}</div>`;
+    if(['queued','running'].includes(b.status)&&state.user.firecrawl)state.importPoll=setTimeout(async()=>{if(state.view!=='importar'||state.batchId!==id)return;try{await post('/import-apify/'+id+'/advance');await loadImportBatches()}catch(e){toast(e.message,true)}},2000);
   }catch(e){el.textContent=e.message}
 }
 const filtersHtml=()=>`<div class="toolbar"><input class="input" id="lead-q" placeholder="Nome, cidade ou segmento" value="${esc(state.filters.q||'')}"><select class="input" id="lead-status"><option value="">Presença digital: todas</option>${options(statuses,state.filters.digital_status)}</select><select class="input" id="lead-stage"><option value="">Etapa: todas</option>${options(stages,state.filters.stage)}</select><button class="btn" data-action="filter">Filtrar</button><button class="btn ghost" data-action="clear-filter">Limpar</button></div>`;
@@ -202,6 +224,7 @@ async function submitForm(form){
     catch(e){document.getElementById('login-error').textContent=e.message}return;
   }
   try{
+    if(form.id==='apify-json-form'){const batch=await post('/import-apify',obj);state.batchId=batch.id;form.querySelector('[name=json]').value='';toast(`${batch.total} empresas importadas; ${batch.created} novas.`);loadImportBatches();return}
     if(form.id==='campaign-form'){await post('/campaigns',obj);toast('Busca iniciada. Acompanhe o progresso abaixo.');form.reset();loadCampaigns()}
     if(form.id==='new-lead-form'){const data=await post('/leads',obj);document.getElementById('new-lead-modal')?.remove();toast(data.created?'Lead cadastrado.':'Lead existente encontrado.');await leadsPage();openLead(data.id)}
     if(form.id==='lead-form'){const id=state.lead.id;const data=await api('/leads/'+id,{method:'PATCH',body:obj});toast('Lead atualizado.');openLead(data.id)}
@@ -213,7 +236,7 @@ async function submitForm(form){
 
 document.addEventListener('submit',event=>{event.preventDefault();submitForm(event.target)});
 document.addEventListener('click',async event=>{
-  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token]');if(!hit)return;
+  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token],[data-import-batch],[data-import-resume]');if(!hit)return;
   if(hit.dataset.view){navigate(hit.dataset.view);document.getElementById('sidebar')?.classList.remove('open');document.getElementById('scrim')?.classList.remove('show');return}
   if(hit.dataset.lead){openLead(Number(hit.dataset.lead));return}
   if(hit.dataset.compose){openLead(Number(hit.dataset.compose),true);return}
@@ -221,6 +244,8 @@ document.addEventListener('click',async event=>{
   if(hit.dataset.niche){navigate('buscar');setTimeout(()=>{const e=document.querySelector('[name="niche"]');if(e)e.value=hit.dataset.niche},0);return}
   if(hit.dataset.list){state.filters={list_id:hit.dataset.list};navigate('leads');return}
   if(hit.dataset.removeToken){try{await api('/integrations/'+hit.dataset.removeToken,{method:'DELETE'});state.user=await api('/me');settingsPage();toast('Chave salva removida.')}catch(e){toast(e.message,true)}return}
+  if(hit.dataset.importBatch){showImportBatch(Number(hit.dataset.importBatch));return}
+  if(hit.dataset.importResume){try{await post('/import-apify/'+hit.dataset.importResume+'/resume');loadImportBatches()}catch(e){toast(e.message,true)}return}
   if(hit.dataset.enrich){try{hit.disabled=true;await post('/leads/'+hit.dataset.enrich+'/enrich');toast('Pesquisa concluída. Confira as evidências.');openLead(Number(hit.dataset.enrich))}catch(e){toast(e.message,true)}finally{hit.disabled=false}return}
   if(hit.dataset.block){if(!confirm('Bloquear este contato e impedir novas importações pelo telefone?'))return;try{await post('/leads/'+hit.dataset.block+'/block');document.getElementById('drawer-mount').innerHTML='';toast('Contato bloqueado.');renderView()}catch(e){toast(e.message,true)}return}
   switch(hit.dataset.action){
@@ -237,6 +262,7 @@ document.addEventListener('click',async event=>{
     case 'filter':state.filters={...state.filters,q:document.getElementById('lead-q').value.trim(),digital_status:document.getElementById('lead-status').value,stage:document.getElementById('lead-stage').value};loadLeads();break;
     case 'clear-filter':state.filters={};leadsPage();break;
     case 'refresh-campaigns':loadCampaigns();break;
+    case 'refresh-imports':loadImportBatches();break;
     case 'copy-message':try{await navigator.clipboard.writeText(document.getElementById('message-text').value);toast('Mensagem copiada.')}catch{toast('Não foi possível copiar automaticamente.',true)}break;
     case 'open-whatsapp':{
       const message=document.getElementById('message-text')?.value.trim();if(!message)return toast('Escreva uma mensagem antes de abrir a conversa.',true);
