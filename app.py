@@ -3,6 +3,7 @@ import io
 import threading
 from flask import Flask, Response, request
 from server import Handler, init_db, turso_credentials
+import os
 
 app = Flask(__name__)
 _ready = False
@@ -14,8 +15,8 @@ _lock = threading.Lock()
 def dispatch(path):
     global _ready
     if path.startswith("api/"):
-        if not all(turso_credentials()):
-            return {"error": "Banco de dados Turso não configurado na hospedagem."}, 503
+        if not os.environ.get("SUPABASE_DB_URL") and not all(turso_credentials()):
+            return {"error": "Banco de dados não configurado na hospedagem."}, 503
         if not _ready:
             with _lock:
                 if not _ready:
