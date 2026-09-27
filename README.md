@@ -59,6 +59,8 @@ Em **Importar JSON**, cole o array exportado do dataset da Apify (ou um objeto q
 
 Com Firecrawl configurado, mantenha a tela aberta: o CRM pesquisa uma empresa por vez e mostra progresso, classificação e links de evidência no detalhe do lead. Se sair, volte à tela para continuar; HTTP 429 da Firecrawl pausa o processamento até você clicar em **Retomar pesquisa**. Uma pesquisa sem evidência permanece **Incerto**, e “Sem site identificado” requer conferência manual. Chaves de API nunca devem ser coladas com o JSON de empresas.
 
+No **Banco de leads**, o botão **Instagram** consulta a Firecrawl com o nome, endereço e localidade daquele lead. O CRM exibe até cinco perfis candidatos e a fonte da busca. Você abre e confere o perfil antes de clicar em **Confirmar este perfil**; a busca sozinha não grava um Instagram no lead. O histórico guarda a indicação do candidato e a confirmação do operador.
+
 ```text
 Busca por cidade + segmento
   → Apify: Google Maps e atores configuráveis para diretórios públicos
