@@ -73,6 +73,45 @@ class CRMTests(unittest.TestCase):
             self.assertEqual(self.request("DELETE", "/integrations/apify")[0], 200)
             self.assertEqual(server.service_key("apify"), "")
 
+    def test_manual_apify_json_import_and_staged_firecrawl(self):
+        self.login()
+        rows = {"items": [
+            {"title": "Boutique Estrela", "placeId": "json-boutique-1", "categoryName": "Loja de roupas", "phone": "21987654321", "website": "https://boutique-estrela.example", "totalScore": 4.8},
+            {"title": "Boutique Estrela", "placeId": "json-boutique-1"},
+            {"title": "Moda Horizonte", "placeId": "json-moda-2", "phone": "21999997777", "website": "https://instagram.com/modahorizonte"},
+        ]}
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "test-only"}):
+            payload = {"json": json.dumps(rows), "city": "Rio de Janeiro", "state": "RJ", "name": "Roupas RJ"}
+            self.assertEqual(self.request("POST", "/import-apify", payload, with_csrf=False)[0], 403)
+            status, batch = self.request("POST", "/import-apify", payload)
+            self.assertEqual(status, 201)
+            self.assertEqual((batch["received"], batch["total"], batch["created"]), (3, 2, 2))
+            self.assertEqual(self.request("POST", "/import-apify", {"json": "invalid"})[0], 400)
+            with patch.object(server, "request_json", side_effect=[{"success": True, "data": {"web": []}}, {"success": True, "data": {"web": []}}]) as provider:
+                first = self.request("POST", f"/import-apify/{batch['id']}/advance")[1]
+                self.assertEqual(first["processed"], 1)
+                result = self.request("POST", f"/import-apify/{batch['id']}/advance")[1]
+                self.assertEqual(provider.call_count, 2)
+            self.assertEqual(result["status"], "done")
+            self.assertEqual((result["processed"], result["enriched"], result["failed"]), (2, 2, 0))
+            self.assertEqual([row["digital_status"] for row in result["items"]], ["site_sem_loja", "apenas_redes"])
+            self.assertEqual(result["items"][1]["city"], "Rio de Janeiro")
+
+    def test_manual_import_pauses_when_firecrawl_rate_limits(self):
+        self.login()
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "test-only"}):
+            _, batch = self.request("POST", "/import-apify", {"json": '[{"title":"Ateliê Prisma","placeId":"json-prisma-429"}]'})
+            rate_limit = urllib.error.HTTPError("https://api.firecrawl.dev/v2/search", 429, "limit", {}, None)
+            with patch.object(server, "request_json", side_effect=rate_limit):
+                status, paused = self.request("POST", f"/import-apify/{batch['id']}/advance")
+            self.assertEqual((status, paused["status"], paused["processed"]), (200, "paused", 0))
+            self.assertEqual(paused["items"][0]["status"], "pending")
+            self.assertEqual(self.request("POST", f"/import-apify/{batch['id']}/resume")[1]["status"], "queued")
+            with patch.object(server, "request_json", return_value={"success": True, "data": {"web": []}}):
+                done = self.request("POST", f"/import-apify/{batch['id']}/advance")[1]
+            self.assertEqual(done["status"], "done")
+            self.assertEqual(done["items"][0]["digital_status"], "incerto")
+
     def test_login_csrf_crud_and_export(self):
         self.assertEqual(self.request("GET", "/leads")[0], 401)
         self.assertEqual(self.request("POST", "/login", {"email": "operator@example.test", "password": "wrong"})[0], 401)
