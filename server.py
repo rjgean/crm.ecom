@@ -125,6 +125,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS list_items(list_id INTEGER NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, PRIMARY KEY(list_id, lead_id));
         CREATE TABLE IF NOT EXISTS suppression(phone_digits TEXT PRIMARY KEY, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS integrations(name TEXT PRIMARY KEY, secret TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, state TEXT, list_id INTEGER REFERENCES lead_lists(id), total INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS import_items(batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, PRIMARY KEY(batch_id,lead_id));
         """)
         if not os.environ.get("VERCEL") and not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
@@ -297,7 +299,7 @@ def enrich_lead(lead_id):
     elif website: status = "site_sem_loja" # Confirmação de checkout exige revisão humana.
     elif found["marketplace"]: status = "marketplace"
     elif found["instagram"] or found["facebook"]: status = "apenas_redes"
-    elif web: status = "sem_site_identificado"
+    elif evidence: status = "sem_site_identificado"
     else: status = "incerto"
     candidate = {**lead, **found, "digital_status": status}
     with db() as con:
@@ -415,6 +417,89 @@ def advance_campaign(campaign_id):
     with db() as con: return rowdict(con.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone())
 
 
+def apify_rows(value):
+    if isinstance(value, list): return value
+    if isinstance(value, dict):
+        for key_name in ("items", "results", "datasetItems", "data"):
+            nested = value.get(key_name)
+            if isinstance(nested, list): return nested
+            if isinstance(nested, dict) and nested is not value:
+                try: return apify_rows(nested)
+                except ValueError: pass
+        if value.get("title") or value.get("name"): return [value]
+    raise ValueError("Cole um array JSON de empresas exportado da Apify (ou um objeto com items).")
+
+
+def normalize_apify_item(item, city, state):
+    if not isinstance(item, dict): return None
+    name = item.get("title") or item.get("name")
+    if not isinstance(name, str) or not name.strip(): return None
+    categories = item.get("categories")
+    category = item.get("categoryName") or item.get("category") or (categories[0] if isinstance(categories, list) and categories else None)
+    website = clean_url(item.get("website"))
+    instagram = clean_url(item.get("instagram"))
+    host = (urllib.parse.urlsplit(website).hostname or "").lower()
+    if host == "instagram.com" or host.endswith(".instagram.com"):
+        instagram, website = instagram or website, ""
+    elif any(host == domain or host.endswith("." + domain) for domain in SOCIAL + DIRECTORY + MARKET):
+        website = ""
+    try: rating = float(item.get("totalScore") or item.get("rating") or 0) or None
+    except (ValueError, TypeError): rating = None
+    try: reviews = max(0, int(item.get("reviewsCount") or item.get("reviews_count") or 0))
+    except (ValueError, TypeError): reviews = 0
+    return {"name": name.strip(), "external_id": item.get("placeId") or item.get("place_id"), "category": str(category or "")[:150],
+            "city": str(item.get("city") or city)[:100], "state": str(item.get("state") or state)[:30],
+            "address": str(item.get("address") or "")[:500], "phone": str(item.get("phone") or item.get("phoneUnformatted") or "")[:60],
+            "website": website, "instagram": instagram, "maps_url": item.get("url") or item.get("maps_url"),
+            "rating": rating, "reviews_count": reviews}
+
+
+def import_summary(batch_id):
+    with db() as con:
+        batch = rowdict(con.execute("SELECT * FROM import_batches WHERE id=?", (batch_id,)).fetchone())
+        if not batch: raise ApiError("Importação não encontrada", 404)
+        batch["items"] = [dict(row) for row in con.execute("SELECT i.lead_id,i.status,i.error,l.name,l.city,l.state,l.website,l.instagram,l.digital_status,l.score FROM import_items i JOIN leads l ON l.id=i.lead_id WHERE i.batch_id=? ORDER BY i.rowid LIMIT 500", (batch_id,))]
+    batch["processed"] = sum(item["status"] in ("done", "error", "skipped") for item in batch["items"])
+    return batch
+
+
+def advance_import(batch_id):
+    if not service_key("firecrawl"): raise ApiError("Configure a chave do Firecrawl em Configurações", 400)
+    with db() as con:
+        batch = con.execute("SELECT status,updated_at FROM import_batches WHERE id=?", (batch_id,)).fetchone()
+        if not batch: raise ApiError("Importação não encontrada", 404)
+        if batch[0] in ("done", "paused"): return import_summary(batch_id)
+        item = con.execute("SELECT lead_id FROM import_items WHERE batch_id=? AND status='pending' ORDER BY rowid LIMIT 1", (batch_id,)).fetchone()
+        if item:
+            lead_id = item[0]
+            claimed = con.execute("UPDATE import_items SET status='processing' WHERE batch_id=? AND lead_id=? AND status='pending'", (batch_id, lead_id)).rowcount
+            if claimed: con.execute("UPDATE import_batches SET status='running',updated_at=? WHERE id=?", (now(), batch_id))
+        else:
+            lead_id, claimed = None, False
+            if (datetime.now(timezone.utc) - datetime.fromisoformat(batch[1])).total_seconds() > 120:
+                con.execute("UPDATE import_items SET status='pending' WHERE batch_id=? AND status='processing'", (batch_id,))
+    if claimed:
+        try:
+            completed = enrich_lead(lead_id)
+            outcome, detail = ("done", None) if completed else ("skipped", "Empresa revisada ou bloqueada; pesquisa ignorada.")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                with db() as con:
+                    con.execute("UPDATE import_items SET status='pending' WHERE batch_id=? AND lead_id=?", (batch_id, lead_id))
+                    con.execute("UPDATE import_batches SET status='paused',error=?,updated_at=? WHERE id=?", ("Firecrawl limitou as solicitações (HTTP 429). Aguarde e retome a pesquisa.", now(), batch_id))
+                return import_summary(batch_id)
+            outcome, detail = "error", error_text(exc)
+        except Exception as exc:
+            outcome, detail = "error", error_text(exc)
+        with db() as con:
+            con.execute("UPDATE import_items SET status=?,error=? WHERE batch_id=? AND lead_id=?", (outcome, detail, batch_id, lead_id))
+            con.execute("UPDATE import_batches SET enriched=enriched+?,failed=failed+?,updated_at=? WHERE id=?", (int(outcome == "done"), int(outcome == "error"), now(), batch_id))
+    with db() as con:
+        remaining = con.execute("SELECT COUNT(*) FROM import_items WHERE batch_id=? AND status IN ('pending','processing')", (batch_id,)).fetchone()[0]
+        if not remaining: con.execute("UPDATE import_batches SET status='done',updated_at=? WHERE id=?", (now(), batch_id))
+    return import_summary(batch_id)
+
+
 class ApiError(Exception):
     def __init__(self, message, status=400): self.message, self.status = message, status
 
@@ -450,7 +535,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def json_body(self):
         size = int(self.headers.get("Content-Length", "0"))
-        if size > 1_000_000: raise ApiError("Requisição muito grande", 413)
+        if size > (4_000_000 if urllib.parse.urlsplit(self.path).path == "/api/import-apify" else 1_000_000): raise ApiError("Requisição muito grande", 413)
         try: return json.loads(self.rfile.read(size)) if size else {}
         except (ValueError, UnicodeDecodeError): raise ApiError("JSON inválido")
 
@@ -502,6 +587,19 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/api/leads": return self.leads()
             if method == "POST" and path == "/api/leads": return self.create_lead()
             if method == "POST" and path == "/api/import": return self.import_leads()
+            if method == "POST" and path == "/api/import-apify": return self.import_apify()
+            if method == "GET" and path == "/api/import-apify":
+                with db() as con: return self.send([dict(row) for row in con.execute("SELECT id,name,city,state,total,enriched,failed,status,error,created_at,list_id FROM import_batches ORDER BY id DESC LIMIT 50")])
+            match = re.fullmatch(r"/api/import-apify/(\d+)", path)
+            if method == "GET" and match: return self.send(import_summary(int(match[1])))
+            match = re.fullmatch(r"/api/import-apify/(\d+)/(advance|resume)", path)
+            if method == "POST" and match:
+                if match[2] == "advance": return self.send(advance_import(int(match[1])))
+                with db() as con:
+                    row = con.execute("SELECT status FROM import_batches WHERE id=?", (int(match[1]),)).fetchone()
+                    if not row: raise ApiError("Importação não encontrada", 404)
+                    if row[0] == "paused": con.execute("UPDATE import_batches SET status='queued',error=NULL,updated_at=? WHERE id=?", (now(), int(match[1])))
+                return self.send(import_summary(int(match[1])))
             if method == "GET" and path == "/api/export": return self.export_leads()
             match = re.fullmatch(r"/api/leads/(\d+)", path)
             if match:
@@ -616,6 +714,36 @@ class Handler(BaseHTTPRequestHandler):
                 _, is_new = upsert_lead(con, item, source="csv")
                 created += bool(is_new)
         return self.send({"created": created, "processed": min(index + 1, 500) if "index" in locals() else 0})
+
+    def import_apify(self):
+        body = self.json_body()
+        pasted = body.get("json")
+        if not isinstance(pasted, str) or not pasted.strip(): raise ApiError("Cole o JSON exportado da Apify")
+        try: rows = apify_rows(json.loads(pasted))
+        except (ValueError, RecursionError) as exc: raise ApiError("JSON inválido. Cole um array de empresas exportado da Apify.")
+        if not rows or len(rows) > 500: raise ApiError("Importe entre 1 e 500 empresas por vez")
+        city, state = str(body.get("city") or "").strip()[:100], str(body.get("state") or "").strip().upper()[:2]
+        name = str(body.get("name") or "Importação Apify").strip()[:100] or "Importação Apify"
+        firecrawl_available = bool(service_key("firecrawl"))
+        with db() as con:
+            list_name = f"{name} · {now()}"
+            list_id = con.execute("INSERT INTO lead_lists(name,created_at) VALUES(?,?)", (list_name, now())).lastrowid
+            batch_id = con.execute("INSERT INTO import_batches(name,city,state,list_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (name,city,state,list_id,"queued" if firecrawl_available else "paused",now(),now())).lastrowid
+            new_count, accepted = 0, 0
+            for row in rows:
+                item = normalize_apify_item(row, city, state)
+                if not item: continue
+                lead_id, created = upsert_lead(con, item, source="apify_json")
+                if not lead_id: continue
+                con.execute("INSERT OR IGNORE INTO list_items(list_id,lead_id) VALUES(?,?)", (list_id, lead_id))
+                accepted += bool(con.execute("INSERT OR IGNORE INTO import_items(batch_id,lead_id) VALUES(?,?)", (batch_id, lead_id)).rowcount)
+                new_count += bool(created)
+            if not accepted: raise ApiError("Nenhuma empresa com nome foi encontrada no JSON ou todos os contatos estão bloqueados")
+            con.execute("UPDATE import_batches SET total=? WHERE id=?", (accepted, batch_id))
+        result = import_summary(batch_id)
+        result["created"] = new_count
+        result["received"] = len(rows)
+        return self.send(result, 201)
 
     def export_leads(self):
         with db() as con: rows = [dict(x) for x in con.execute("SELECT name,category,city,state,phone,website,instagram,digital_status,score,stage,offer,amount,source,updated_at FROM leads WHERE blocked=0 ORDER BY id DESC")]
