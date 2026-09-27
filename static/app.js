@@ -73,7 +73,8 @@ async function loadCampaigns(){
   const el=document.getElementById('campaigns');if(!el)return;
   try{const rows=await api('/campaigns');if(!document.getElementById('campaigns'))return;
     el.innerHTML=rows.length?rows.map(c=>`<div class="campaign-card"><div><strong>${esc(c.niche)} · ${esc(c.city)}, ${esc(c.state)}</strong><small>${date(c.created_at)} · limite ${c.limit_count} · encontrados ${c.found} · novos ${c.saved} · enriquecidos ${c.enriched}</small>${c.error?`<small style="color:var(--gold)">${esc(c.error)}</small>`:''}</div><span class="badge ${c.status==='failed'?'red':c.status==='done'?'':'warning'}">${esc(c.status)}</span></div>`).join(''):'<div class="empty">Nenhuma campanha ainda. Use os filtros acima para iniciar.</div>';
-    if(rows.some(c=>['queued','running','enriching'].includes(c.status))) setTimeout(()=>{if(state.view==='buscar')loadCampaigns()},5000);
+    const active=rows.find(c=>['queued','running','enriching'].includes(c.status));
+    if(active) setTimeout(async()=>{if(state.view!=='buscar')return;try{if(state.user.serverless)await post(`/campaigns/${active.id}/advance`,{});await loadCampaigns()}catch(e){toast(e.message,true)}},5000);
   }catch(e){el.textContent=e.message}
 }
 const filtersHtml=()=>`<div class="toolbar"><input class="input" id="lead-q" placeholder="Nome, cidade ou segmento" value="${esc(state.filters.q||'')}"><select class="input" id="lead-status"><option value="">Presença digital: todas</option>${options(statuses,state.filters.digital_status)}</select><select class="input" id="lead-stage"><option value="">Etapa: todas</option>${options(stages,state.filters.stage)}</select><button class="btn" data-action="filter">Filtrar</button><button class="btn ghost" data-action="clear-filter">Limpar</button></div>`;
