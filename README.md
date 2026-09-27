@@ -44,6 +44,8 @@ O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, 
 
 Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira as chaves no formulário do CRM, em `.env.example`, no repositório ou em prints. A interface estática abre mesmo sem banco; a API devolve 503 até as duas variáveis Turso estarem válidas. A tela de busca avança as campanhas em etapas enquanto permanece aberta; se você sair dela, volte para continuar. Cada campanha pode gerar cobranças na Apify e Firecrawl. Para uso comercial, valide uma busca pequena com as chaves reais e os custos dos provedores antes de aumentar o volume.
 
+**Atenção aos ambientes:** o domínio de produção acompanha a branch `main`, enquanto o CRM desta PR está em `feat/prospeccao-sites-sem-site` (Preview). Ao conectar o Turso e editar variáveis para Preview, faça redeploy do deployment **dessa branch** ou envie outro commit nela. Um redeploy da produção recria apenas o commit da `main` e não atualiza o Preview.
+
 As buscas da Apify e do Firecrawl são cobradas nas contas dos provedores. O limite de 1 a 100 empresas restringe a leitura e os resultados pretendidos; custos finais e limites efetivos do ator precisam ser validados na conta conectada. O app não envia mensagens automaticamente nem comprova que um número tem WhatsApp. A API4com é usada à parte para ligação.
 
 ## Fluxo
