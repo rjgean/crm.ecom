@@ -23,6 +23,11 @@ def dispatch(path):
                     try:
                         init_db()
                         _ready = True
+                    except RuntimeError as exc:
+                        if str(exc).startswith("Defina ADMIN_EMAIL e ADMIN_PASSWORD"):
+                            return {"error": "Configure ADMIN_EMAIL e ADMIN_PASSWORD (senha com pelo menos 12 caracteres) neste ambiente da Vercel."}, 503
+                        app.logger.exception("Falha ao inicializar o banco")
+                        return {"error": "Banco indisponível. Confira as variáveis de ambiente e os registros do servidor."}, 503
                     except Exception:
                         app.logger.exception("Falha ao inicializar o banco")
                         return {"error": "Banco indisponível. Confira as variáveis de ambiente e os registros do servidor."}, 503
