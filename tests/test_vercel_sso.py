@@ -1,9 +1,12 @@
 """Verify protected deployment access and origin checks without cloud credentials."""
 import io
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+import server
 from server import Handler
 
 
@@ -22,7 +25,8 @@ class VercelSSOTests(unittest.TestCase):
         return handler.status, handler.wfile.getvalue()
 
     def test_protected_vercel_deployment_needs_no_crm_account(self):
-        with patch.dict(os.environ, {"VERCEL": "1", "VERCEL_ENV": "preview"}):
+        with tempfile.TemporaryDirectory() as directory, patch.object(server, "DB_PATH", Path(directory) / "crm.sqlite3"), patch.dict(os.environ, {"VERCEL": "1", "VERCEL_ENV": "preview"}):
+            server.init_db()
             status, body = self.request("GET", "/me")
             self.assertEqual(status, 200)
             self.assertIn(b'"sso": true', body)
