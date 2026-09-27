@@ -1,0 +1,36 @@
+"""Verify protected deployment access and origin checks without cloud credentials."""
+import io
+import os
+import unittest
+from unittest.mock import patch
+
+from server import Handler
+
+
+class VercelSSOTests(unittest.TestCase):
+    def request(self, method, path, host="crm-ecom-test.vercel.app", headers=None):
+        handler = object.__new__(Handler)
+        handler.path = "/api" + path
+        handler.headers = {"Host": host, **(headers or {})}
+        handler.client_address = ("127.0.0.1", 0)
+        handler.rfile = io.BytesIO(b"{}")
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda status: setattr(handler, "status", status)
+        handler.send_header = lambda *args: None
+        handler.end_headers = lambda: None
+        handler.route(method)
+        return handler.status, handler.wfile.getvalue()
+
+    def test_protected_vercel_deployment_needs_no_crm_account(self):
+        with patch.dict(os.environ, {"VERCEL": "1", "VERCEL_ENV": "preview"}):
+            status, body = self.request("GET", "/me")
+            self.assertEqual(status, 200)
+            self.assertIn(b'"sso": true', body)
+            self.assertEqual(self.request("POST", "/login")[0], 404)
+            self.assertEqual(self.request("GET", "/me", host="crm.example.com")[0], 403)
+            self.assertEqual(self.request("POST", "/leads", headers={"X-CSRF-Token": "vercel-sso", "Origin": "https://attacker.test"})[0], 403)
+            self.assertEqual(self.request("POST", "/leads", headers={"Origin": "https://crm-ecom-test.vercel.app"})[0], 403)
+
+
+if __name__ == "__main__":
+    unittest.main()

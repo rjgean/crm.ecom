@@ -1,0 +1,34 @@
+"""Exercise request-driven campaigns without a persistent background worker."""
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+os.environ.setdefault("ADMIN_EMAIL", "operator@example.test")
+os.environ.setdefault("ADMIN_PASSWORD", "TestingPassphrase123!")
+import server
+
+
+class ServerlessCampaignTests(unittest.TestCase):
+    def test_campaign_advances_one_remote_step_per_request(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(server, "DB_PATH", Path(directory) / "crm.sqlite3"), patch.dict(os.environ, {"VERCEL": "1", "APIFY_TOKEN": "fake", "FIRECRAWL_API_KEY": "fake"}):
+            server.init_db()
+            with server.db() as con:
+                campaign_id = con.execute("INSERT INTO campaigns(niche,city,state,limit_count,created_at,updated_at) VALUES(?,?,?,?,?,?)", ("padaria", "Rio", "RJ", 1, server.now(), server.now())).lastrowid
+
+            def provider(url, token, payload=None, timeout=35):
+                if url.endswith("/runs"): return {"data": {"id": "run-1"}}
+                if "/actor-runs/" in url: return {"data": {"status": "SUCCEEDED", "defaultDatasetId": "dataset-1"}}
+                if "/datasets/" in url: return [{"title": "Padaria Exemplo", "placeId": "place-1", "phone": "21999999999"}]
+                if "/search" in url: return {"success": True, "data": {"web": []}}
+                raise AssertionError(url)
+
+            with patch.object(server, "request_json", side_effect=provider):
+                steps = [server.advance_campaign(campaign_id) for _ in range(4)]
+            self.assertEqual([step["status"] for step in steps], ["running", "enriching", "enriching", "done"])
+            self.assertEqual((steps[-1]["found"], steps[-1]["saved"], steps[-1]["enriched"]), (1, 1, 1))
+
+
+if __name__ == "__main__":
+    unittest.main()
