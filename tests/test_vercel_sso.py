@@ -43,6 +43,15 @@ class VercelSSOTests(unittest.TestCase):
             self.assertEqual(self.request("GET", "/me", host="unlisted-project.vercel.app")[0], 403)
             self.assertEqual(self.request("GET", "/me", host="crm-ecom-ten.vercel.app")[0], 200)
 
+    def test_primary_domain_requires_token_when_public_and_preview_retains_sso(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(server, "DB_PATH", Path(directory) / "crm.sqlite3"), patch.dict(os.environ, {"VERCEL": "1", "VERCEL_ENV": "production", "CRM_PUBLIC_HOST": "crm-ecom-ten.vercel.app"}):
+            server.init_db()
+            self.assertEqual(self.request("GET", "/me")[0], 401)
+            self.assertEqual(self.request("GET", "/access/status")[0], 200)
+            self.assertEqual(self.request("GET", "/me", host="crm-ecom-public.vercel.app")[0], 403)
+            with patch.dict(os.environ, {"VERCEL_ENV": "preview"}):
+                self.assertEqual(self.request("GET", "/me", host="crm-ecom-preview-orange-even-projects.vercel.app")[0], 200)
+
 
 if __name__ == "__main__":
     unittest.main()
