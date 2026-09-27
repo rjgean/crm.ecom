@@ -1,5 +1,5 @@
 const root = document.getElementById('app');
-const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), user: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, batchId: null, importPoll: null };
+const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, batchId: null, importPoll: null };
 const stages = [['novo','Novo'],['pesquisado','Pesquisado'],['qualificado','Qualificado'],['contato','Contato iniciado'],['respondeu','Respondeu'],['reuniao','Reunião'],['proposta','Proposta'],['negociacao','Negociação'],['ganho','Ganho'],['perdido','Perdido']];
 const importStatus = {queued:'Na fila',running:'Pesquisando',paused:'Pausado',done:'Concluído',pending:'Aguardando',processing:'Pesquisando',error:'Falhou',skipped:'Ignorado'};
 const statuses = [['incerto','Incerto'],['sem_site_identificado','Sem site identificado'],['apenas_redes','Apenas redes sociais'],['site_sem_loja','Site sem loja'],['marketplace','Marketplace'],['loja_virtual','Loja virtual']];
@@ -42,7 +42,9 @@ function renderUnavailable(message) {
   root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Painel indisponível</h1><p class="muted">${esc(message)}</p><button class="btn primary full" onclick="location.reload()">Tentar novamente</button></section></main>`;
 }
 function renderLogin() {
-  root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Verificação de acesso</h1><p class="muted">Digite o token enviado pelo administrador no seu WhatsApp.</p><form id="access-verify-form"><label class="field">Token de acesso<input name="code" inputmode="text" autocomplete="one-time-code" spellcheck="false" maxlength="14" required placeholder="XXXX-XXXX-XXXX"></label><button class="btn primary full">Acessar ferramenta →</button><div id="login-error" class="muted" role="alert"></div></form></section></main>`;
+  const message = new URLSearchParams(location.search).get('auth_error');
+  const google=state.authConfig?.google;
+  root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Verificação de acesso</h1>${google?`<p class="muted">Entre com a conta Google autorizada pelo administrador.</p><a class="btn primary full" href="/api/auth/google/start">Entrar com Google →</a>${message?`<p class="notice" role="alert">${message==='2'?'Este e-mail não está cadastrado ou o acesso expirou.':'Não foi possível confirmar o login. Tente novamente.'}</p>`:''}`:`<p class="muted">Digite o token enviado pelo administrador no seu WhatsApp.</p><form id="access-verify-form"><label class="field">Token de acesso<input name="code" inputmode="text" autocomplete="one-time-code" spellcheck="false" maxlength="14" required placeholder="XXXX-XXXX-XXXX"></label><button class="btn primary full">Acessar ferramenta →</button><div id="login-error" class="muted" role="alert"></div></form>`}</section></main>`;
 }
 
 function renderPasswordLogin(){
@@ -50,7 +52,7 @@ function renderPasswordLogin(){
 }
 
 function shell() {
-  const n = nav.filter(([id])=>state.user.role==='admin'||!['configuracoes','acessos'].includes(id)).map(([id,icon,text],idx)=>`${idx===0||idx===6||idx===11?`<div class="nav-group">${idx===0?'Operação':idx===6?'Inteligência':'Ferramentas'}</div>`:''}<button title="${esc(text)}" aria-label="${esc(text)}" class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span class="nav-label">${text}</span></button>`).join('');
+  const n = nav.filter(([id])=>state.user.role==='admin'||id!=='acessos').map(([id,icon,text],idx)=>`${idx===0||idx===6||idx===11?`<div class="nav-group">${idx===0?'Operação':idx===6?'Inteligência':'Ferramentas'}</div>`:''}<button title="${esc(text)}" aria-label="${esc(text)}" class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span class="nav-label">${text}</span></button>`).join('');
   root.innerHTML=`<div class="scrim" id="scrim"></div><div class="shell"><aside class="sidebar ${state.sidebarCollapsed?'collapsed':''}" id="sidebar"><div class="sidebar-head"><div class="logo">C</div><div class="brand">CRM<span>•</span>ECOM</div><button class="sidebar-collapse" data-action="toggle-sidebar" type="button" aria-label="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}" aria-expanded="${!state.sidebarCollapsed}" title="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}">${state.sidebarCollapsed?'›':'‹'}</button></div><nav class="nav">${n}</nav><div class="sidebar-foot"><div class="sidebar-user">Operador<br><strong>${esc(state.user.email)}</strong></div>${state.user.sso?'':'<button class="btn ghost full" data-action="logout">Sair da conta</button>'}</div></aside><div class="main ${state.sidebarCollapsed?'sidebar-is-collapsed':''}"><header class="topbar"><button class="mobile-toggle" data-action="menu" aria-label="Abrir menu">☰</button><div class="topbar-title"><h1 id="top-title">Painel</h1><small id="top-subtitle">Resumo da sua prospecção</small></div><span class="topbar-badge ${state.user.apify&&state.user.firecrawl?'':'offline'}">${state.user.apify&&state.user.firecrawl?'● Integrações prontas':'● Configuração parcial'}</span></header><main class="page" id="content"></main></div></div><div id="drawer-mount"></div>`;
 }
 function title(name, sub) { document.getElementById('top-title').textContent=name;document.getElementById('top-subtitle').textContent=sub; }
@@ -58,7 +60,7 @@ async function renderView() {
   if (!state.user) return;
   clearTimeout(state.importPoll);
   state.view=getView();
-  if (!nav.some(x=>x[0]===state.view) || (state.user.role!=='admin' && ['configuracoes','acessos'].includes(state.view))) state.view='painel';
+  if (!nav.some(x=>x[0]===state.view) || (state.user.role!=='admin' && state.view==='acessos')) state.view='painel';
   shell();loading();
   const selected=document.querySelector(`.nav-link[data-view="${state.view}"]`);selected?.classList.add('active');
   try {
@@ -171,6 +173,10 @@ function integrationsPage(){
 }
 function settingsPage(){
   title('Configurações','Conexões e operação da ferramenta.');
+  if(state.user.role!=='admin'){
+    document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Configurações</h1><p>Informações da sua conta e ferramentas disponíveis.</p></div></div><section class="panel"><h2>Sua conta</h2><p class="help">Conta autorizada: ${esc(state.user.email)}</p><p class="help">O administrador gerencia o prazo do acesso e as credenciais dos serviços.</p></section><section class="panel" style="margin-top:16px"><h2>Serviços disponíveis</h2><div class="button-row"><span class="badge">Apify: ${state.user.apify?'disponível':'não configurado'}</span><span class="badge">Firecrawl: ${state.user.firecrawl?'disponível':'não configurado'}</span><span class="badge">IA: ${state.user.groq?'disponível':'não configurada'}</span></div></section>`;
+    return;
+  }
   const keyForm=(service,name,configured)=>`<section class="panel"><h2>${name}</h2><span class="badge ${configured?'':'warning'}">${configured?'Configurada':'Pendente'}</span><form class="token-form" data-service="${service}" style="display:grid;gap:12px;margin-top:14px"><label class="field">Chave de API<input type="password" name="token" autocomplete="off" spellcheck="false" minlength="10" maxlength="4096" placeholder="Cole a chave aqui" required></label><button class="btn primary" type="submit">Salvar chave</button></form><p class="help" style="margin-top:12px">A chave salva não será exibida novamente. Cole uma nova para substituir a atual.</p><button class="btn ghost" data-remove-token="${service}" type="button">Remover chave salva</button></section>`;
   document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Configuração</h1><p>Conecte suas ferramentas de prospecção.</p></div></div><div class="two-col">${keyForm('apify','Apify · Google Maps',state.user.apify)}${keyForm('firecrawl','Firecrawl · pesquisa web',state.user.firecrawl)}${keyForm('groq','Groq · mensagens com IA',state.user.groq)}${state.user.resend?'<section class="panel"><h2>Resend · integração anterior</h2><p class="help">A chave de e-mail não é usada no acesso por WhatsApp. Se não precisar mais dela, você pode removê-la.</p><button class="btn ghost" data-remove-token="resend">Remover chave Resend</button></section>':''}<section class="panel"><h2>Contato e vendas</h2><p class="help">WhatsApp abre uma mensagem editada por lead. A ligação usa o número exibido para copiar ou abrir o discador; o serviço API4com continua externo. Sites e lojas são entregues por você na Nuvemshop ou Yampi.</p><div class="hr"></div><p class="help">Operador atual: ${esc(state.user.email)}.</p></section>${state.user.sso?'<section class="panel"><h2>Acesso</h2><p class="help">Seu acesso é controlado pela conta da Vercel. Gerencie membros e sessões no painel da Vercel.</p></section>':'<section class="panel"><h2>Alterar senha</h2><form id="password-form" style="display:grid;gap:12px"><label class="field">Senha atual<input type="password" name="current" autocomplete="current-password" required></label><label class="field">Nova senha (mínimo 12 caracteres)<input type="password" name="new" autocomplete="new-password" minlength="12" required></label><button class="btn primary">Salvar nova senha</button></form><p class="help" style="margin-top:12px">Após a alteração, todas as sessões são encerradas.</p></section>'}</div>`;
 }
@@ -179,6 +185,14 @@ async function accessPage(){
   title('Acessos','Colaboradores e validade de uso da ferramenta.');
   const el=document.getElementById('content');
   el.innerHTML='<section class="panel"><div class="empty">Carregando acessos…</div></section>';
+  if(state.user.google){
+    try{
+      const people=await api('/access/google-users');
+      const defaultEnd=new Date(Date.now()+7*86400000);const localEnd=new Date(defaultEnd.getTime()-defaultEnd.getTimezoneOffset()*60000).toISOString().slice(0,16);
+      el.innerHTML=`<div class="section-title"><div><h1>Acessos</h1><p>Autorize contas Google e defina o prazo de cada colaborador.</p></div></div><section class="panel"><h2>Adicionar colaborador</h2><form id="google-user-form" class="form-grid"><label class="field span2">E-mail da conta Google<input name="email" type="email" autocomplete="off" required placeholder="colaborador@exemplo.com"></label><label class="field span2">Acesso válido até<input name="expires_at" type="datetime-local" value="${localEnd}" required></label><button class="btn primary">Salvar acesso</button></form><p class="help">A pessoa entra com Google; contas não cadastradas não acessam o CRM.</p></section><section class="panel" style="margin-top:16px"><h2>Contas autorizadas</h2>${people.length?people.map(p=>`<div class="row-item"><div><strong>${esc(p.email)}</strong><small>${p.revoked_at?'Revogado em '+date(p.revoked_at):new Date(p.expires_at)<new Date()?'Expirado':'Válido até '+date(p.expires_at)}</small></div><div class="button-row">${p.revoked_at||new Date(p.expires_at)<new Date()?'':`<button class="btn danger" data-revoke-google="${p.id}">Revogar</button>`}</div></div>`).join(''):'<div class="empty">Nenhuma conta Google cadastrada.</div>'}</section>`;
+    }catch(e){failure(e)}
+    return;
+  }
   try{
     const [settings,people]=await Promise.all([api('/access/settings'),api('/access/collaborators')]);
     const defaultEnd=new Date(Date.now()+7*86400000);const localEnd=new Date(defaultEnd.getTime()-defaultEnd.getTimezoneOffset()*60000).toISOString().slice(0,16);
@@ -279,6 +293,7 @@ async function submitForm(form){
   }
   try{
     if(form.id==='access-settings-form'){await post('/access/settings',obj);toast('Configuração de acesso salva.');accessPage();return}
+    if(form.id==='google-user-form'){await post('/access/google-users',{email:obj.email,expires_at:new Date(obj.expires_at).toISOString()});toast('Conta Google autorizada.');accessPage();return}
     if(form.id==='collaborator-form'){await post('/access/collaborators',{phone:obj.phone,expires_at:new Date(obj.expires_at).toISOString()});toast('WhatsApp cadastrado.');accessPage();return}
     if(form.id==='apify-json-form'){const batch=await post('/import-apify',obj);state.batchId=batch.id;form.querySelector('[name=json]').value='';toast(`${batch.total} empresas importadas; ${batch.created} novas.`);loadImportBatches();return}
     if(form.id==='campaign-form'){await post('/campaigns',obj);toast('Busca iniciada. Acompanhe o progresso abaixo.');form.reset();loadCampaigns()}
@@ -292,7 +307,8 @@ async function submitForm(form){
 
 document.addEventListener('submit',event=>{event.preventDefault();submitForm(event.target)});
 document.addEventListener('click',async event=>{
-  const hit=event.target.closest('[data-issue-access],[data-issue-admin],[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token],[data-import-batch],[data-import-resume],[data-find-instagram],[data-instagram-confirm],[data-revoke-access]');if(!hit)return;
+  const hit=event.target.closest('[data-issue-access],[data-issue-admin],[data-revoke-google],[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token],[data-import-batch],[data-import-resume],[data-find-instagram],[data-instagram-confirm],[data-revoke-access]');if(!hit)return;
+  if(hit.dataset.revokeGoogle){if(!confirm('Revogar este acesso agora?'))return;try{await api('/access/google-users/'+hit.dataset.revokeGoogle,{method:'DELETE'});toast('Acesso revogado.');accessPage()}catch(e){toast(e.message,true)}return}
   if(hit.dataset.issueAccess || hit.dataset.issueAdmin){
     try{
       const result=await post(hit.dataset.issueAdmin?'/access/admin/issue':'/access/collaborators/'+hit.dataset.issueAccess+'/issue');
@@ -379,4 +395,4 @@ document.addEventListener('dragover',event=>{const col=event.target.closest('[da
 document.addEventListener('dragleave',event=>{const col=event.target.closest('[data-drop]');if(col&&!col.contains(event.relatedTarget))col.classList.remove('over')});
 document.addEventListener('drop',async event=>{const col=event.target.closest('[data-drop]');if(!col||!dragging)return;event.preventDefault();col.classList.remove('over');try{await api('/leads/'+dragging,{method:'PATCH',body:{stage:col.dataset.drop}});toast('Etapa atualizada.');crmPage()}catch(e){toast(e.message,true)}dragging=null});
 window.addEventListener('hashchange',renderView);
-(async()=>{try{state.user=await api('/me');state.view=getView();renderView()}catch(e){if(!state.user && (e.message==='Entre para continuar'||e.message.includes('Sessão expirada')))renderLogin();else renderUnavailable(e.message)}})();
+(async()=>{try{state.authConfig=await api('/auth/config');state.user=await api('/me');state.view=getView();renderView()}catch(e){if(!state.user && (e.message==='Entre para continuar'||e.message.includes('Sessão expirada')))renderLogin();else renderUnavailable(e.message)}})();
