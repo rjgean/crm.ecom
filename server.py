@@ -309,6 +309,40 @@ def enrich_lead(lead_id):
     return True
 
 
+def instagram_profile_url(value):
+    url = clean_url(value)
+    parts = urllib.parse.urlsplit(url)
+    if (parts.hostname or "").lower() not in ("instagram.com", "www.instagram.com"): return ""
+    handle = parts.path.strip("/")
+    excluded = {"p", "reel", "reels", "stories", "explore", "accounts", "about", "direct", "tv", "tags"}
+    if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle) or handle.lower() in excluded: return ""
+    return "https://www.instagram.com/" + handle + "/"
+
+
+def instagram_candidates(lead, hits):
+    name_words = [word for word in key(lead["name"]).split() if len(word) >= 3 and word not in ("loja", "empresa", "comercio", "servicos", "atelie", "boutique", "moda", "salao", "barbearia", "restaurante", "clinica", "de", "da", "do", "dos", "das")]
+    if not name_words: name_words = [word for word in key(lead["name"]).split() if len(word) >= 2]
+    location_words = [word for word in key(" ".join((lead.get("address") or "", lead.get("city") or ""))).split() if len(word) >= 4 and word not in ("rua", "avenida", "bairro", "brasil", "numero", "centro", "janeiro")]
+    candidates = {}
+    for hit in hits[:12]:
+        if not isinstance(hit, dict): continue
+        url = instagram_profile_url(hit.get("url") or (hit.get("metadata") or {}).get("url"))
+        if not url: continue
+        title, description = str(hit.get("title") or "")[:200], str(hit.get("description") or "")[:400]
+        searchable = key(title + " " + description + " " + url)
+        compact = searchable.replace(" ", "")
+        name_hits = sum(word in searchable or word in compact for word in name_words)
+        if not name_hits: continue
+        local_hits = sum(word in searchable for word in location_words)
+        candidate = {"url": url, "title": title or url, "description": description,
+                     "name_matches": name_hits, "location_matches": local_hits,
+                     "match": "Nome e localidade aparecem no resultado" if local_hits else "Nome semelhante; confira endereço e perfil"}
+        score = min(name_hits, 3) * 3 + min(local_hits, 2) * 2
+        previous = candidates.get(url)
+        if not previous or score > previous[0]: candidates[url] = (score, candidate)
+    return [value[1] for value in sorted(candidates.values(), key=lambda pair: pair[0], reverse=True)[:5]]
+
+
 def run_campaign(c):
     token = service_key("apify")
     if not token: raise RuntimeError("APIFY_TOKEN ausente")
@@ -606,6 +640,10 @@ class Handler(BaseHTTPRequestHandler):
                 lead_id = int(match[1])
                 if method == "GET": return self.lead_detail(lead_id)
                 if method == "PATCH": return self.update_lead(lead_id)
+            match = re.fullmatch(r"/api/leads/(\d+)/instagram", path)
+            if method == "POST" and match: return self.search_instagram(int(match[1]))
+            match = re.fullmatch(r"/api/leads/(\d+)/instagram/confirm", path)
+            if method == "POST" and match: return self.confirm_instagram(int(match[1]))
             match = re.fullmatch(r"/api/leads/(\d+)/(activity|enrich|block)", path)
             if match and method == "POST": return self.lead_action(int(match[1]), match[2])
             if method == "GET" and path == "/api/campaigns":
@@ -693,6 +731,45 @@ class Handler(BaseHTTPRequestHandler):
             lead["activities"] = [dict(x) for x in con.execute("SELECT * FROM activities WHERE lead_id=? ORDER BY id DESC", (lead_id,))]
             lead["lists"] = [x[0] for x in con.execute("SELECT list_id FROM list_items WHERE lead_id=?", (lead_id,))]
             return self.send(lead)
+
+    def search_instagram(self, lead_id):
+        token = service_key("firecrawl")
+        if not token: raise ApiError("Configure a chave do Firecrawl em Configurações para pesquisar Instagram")
+        with db() as con:
+            lead = rowdict(con.execute("SELECT * FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone())
+        if not lead: raise ApiError("Lead não encontrado", 404)
+        location = ", ".join(part for part in (lead["address"], lead["city"], lead["state"]) if part)
+        queries = [f'"{lead["name"]}" "{location}" site:instagram.com']
+        fallback = f'"{lead["name"]}" "{lead["city"] or lead["state"] or "Brasil"}" site:instagram.com'
+        if lead["address"] and fallback != queries[0]: queries.append(fallback)
+        try:
+            candidates = []
+            for query in queries:
+                response = request_json("https://api.firecrawl.dev/v2/search", token, {"query": query[:500], "limit": 10, "country": "BR"})
+                if not response.get("success", True): raise ValueError("Pesquisa não concluída")
+                candidates = instagram_candidates(lead, (response.get("data") or {}).get("web") or [])
+                if candidates: break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429: raise ApiError("Firecrawl limitou as buscas. Aguarde e tente novamente.", 429)
+            raise ApiError(error_text(exc), 502)
+        except (ValueError, KeyError, TypeError) as exc: raise ApiError("A pesquisa do Instagram não retornou resultados válidos", 502)
+        with db() as con:
+            for candidate in candidates:
+                add_observation(con, lead_id, "instagram candidato de busca", candidate["title"] + " · " + candidate["match"], candidate["url"])
+        return self.send({"name": lead["name"], "address": location, "candidates": candidates})
+
+    def confirm_instagram(self, lead_id):
+        url = instagram_profile_url(self.json_body().get("url"))
+        if not url: raise ApiError("Selecione um perfil válido do Instagram")
+        with db() as con:
+            lead = rowdict(con.execute("SELECT * FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone())
+            if not lead: raise ApiError("Lead não encontrado", 404)
+            found = con.execute("SELECT 1 FROM observations WHERE lead_id=? AND kind='instagram candidato de busca' AND source_url=?", (lead_id, url)).fetchone()
+            if not found: raise ApiError("Pesquise e selecione um candidato antes de salvar", 400)
+            status = "apenas_redes" if lead["digital_status"] in ("incerto", "sem_site_identificado") else lead["digital_status"]
+            con.execute("UPDATE leads SET instagram=?,digital_status=?,score=?,updated_at=? WHERE id=?", (url, status, score_lead({**lead, "instagram": url, "digital_status": status}), now(), lead_id))
+            add_observation(con, lead_id, "instagram confirmado pelo operador", url, url)
+        return self.lead_detail(lead_id)
 
     def create_lead(self):
         body = self.json_body()
