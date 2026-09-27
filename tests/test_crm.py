@@ -55,6 +55,24 @@ class CRMTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.csrf = value["csrf"]
 
+    def test_integration_credentials_are_encrypted_and_never_returned(self):
+        self.login()
+        secret = "apify-test-only-long-secret-123"
+        with patch.dict(os.environ, {"CRM_CREDENTIALS_KEY": "local-credential-encryption-key-32bytes!", "APIFY_TOKEN": ""}):
+            self.assertEqual(self.request("POST", "/integrations", {"service": "apify", "token": secret}, with_csrf=False)[0], 403)
+            status, result = self.request("POST", "/integrations", {"service": "apify", "token": secret})
+            self.assertEqual(status, 200)
+            self.assertNotIn(secret, json.dumps(result))
+            with server.db() as con:
+                saved = con.execute("SELECT secret FROM integrations WHERE name='apify'").fetchone()[0]
+            self.assertNotIn(secret, saved)
+            self.assertEqual(server.service_key("apify"), secret)
+            _, me = self.request("GET", "/me")
+            self.assertTrue(me["apify"])
+            self.assertNotIn(secret, json.dumps(me))
+            self.assertEqual(self.request("DELETE", "/integrations/apify")[0], 200)
+            self.assertEqual(server.service_key("apify"), "")
+
     def test_login_csrf_crud_and_export(self):
         self.assertEqual(self.request("GET", "/leads")[0], 401)
         self.assertEqual(self.request("POST", "/login", {"email": "operator@example.test", "password": "wrong"})[0], 401)
