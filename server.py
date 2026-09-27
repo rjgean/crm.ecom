@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("DATABASE_PATH", str(ROOT / "data" / "crm.sqlite3"))).resolve()
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8080"))
-COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1" if os.environ.get("VERCEL") else "0") == "1"
 STAGES = ["novo", "pesquisado", "qualificado", "contato", "respondeu", "reuniao", "proposta", "negociacao", "ganho", "perdido"]
 STATUSES = ["incerto", "sem_site_identificado", "apenas_redes", "site_sem_loja", "marketplace", "loja_virtual"]
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/styles.css": ("styles.css", "text/css; charset=utf-8")}
@@ -39,6 +39,14 @@ def now():
 
 
 def db():
+    if os.environ.get("TURSO_DATABASE_URL"):
+        import turso_serverless
+        token = os.environ.get("TURSO_AUTH_TOKEN")
+        if not token: raise RuntimeError("TURSO_AUTH_TOKEN ausente")
+        con = turso_serverless.connect(os.environ["TURSO_DATABASE_URL"], auth_token=token)
+        con.row_factory = turso_serverless.Row
+        con.execute("PRAGMA foreign_keys=ON")
+        return con
     con = sqlite3.connect(DB_PATH, timeout=20)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON")
@@ -47,10 +55,9 @@ def db():
 
 
 def init_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not os.environ.get("TURSO_DATABASE_URL"): DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db() as con:
         con.executescript("""
-        PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY, niche TEXT NOT NULL, city TEXT NOT NULL, state TEXT NOT NULL, limit_count INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'queued', apify_run_id TEXT, dataset_id TEXT, found INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -74,9 +81,10 @@ def init_db():
             password = os.environ.get("ADMIN_PASSWORD", "")
             if not email or len(password) < 12 or "@" not in email:
                 raise RuntimeError("Defina ADMIN_EMAIL e ADMIN_PASSWORD (mínimo 12 caracteres) para criar o primeiro operador.")
-            con.execute("INSERT INTO users(email,password_hash) VALUES(?,?)", (email, hash_password(password)))
-        # A thread retoma campanhas interrompidas em reinícios do processo.
-        con.execute("UPDATE campaigns SET status='queued',updated_at=? WHERE status IN ('running','enriching')", (now(),))
+            con.execute("INSERT OR IGNORE INTO users(email,password_hash) VALUES(?,?)", (email, hash_password(password)))
+        if not os.environ.get("VERCEL"):
+            # A thread local retoma campanhas interrompidas em reinícios do processo.
+            con.execute("UPDATE campaigns SET status='queued',updated_at=? WHERE status IN ('running','enriching')", (now(),))
 
 
 def hash_password(password):
@@ -298,6 +306,55 @@ def worker():
             time.sleep(3)
 
 
+def advance_campaign(campaign_id):
+    """Advance one bounded step on request; serverless instances cannot host a worker."""
+    token = os.environ.get("APIFY_TOKEN", "")
+    if not token: raise RuntimeError("APIFY_TOKEN ausente")
+    with db() as con:
+        c = rowdict(con.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone())
+    if not c: raise ApiError("Campanha não encontrada", 404)
+    if c["status"] in ("done", "partial", "failed"): return c
+    try:
+        if c["status"] == "queued":
+            with db() as con:
+                claimed = con.execute("UPDATE campaigns SET status='running',updated_at=? WHERE id=? AND status='queued'", (now(), campaign_id)).rowcount
+            if not claimed: return c
+            actor_input = {"searchStringsArray": [f'{c["niche"]} em {c["city"]}, {c["state"]}, Brasil'], "maxCrawledPlacesPerSearch": c["limit_count"], "language": "pt", "maxReviews": 0}
+            result = request_json("https://api.apify.com/v2/actors/compass~crawler-google-places/runs", token, actor_input)
+            with db() as con: con.execute("UPDATE campaigns SET apify_run_id=?,updated_at=? WHERE id=?", (result["data"]["id"], now(), campaign_id))
+        elif c["status"] == "running":
+            if not c["apify_run_id"]: return c
+            run = request_json(f'https://api.apify.com/v2/actor-runs/{urllib.parse.quote(c["apify_run_id"])}/', token)["data"]
+            if run["status"] in ("FAILED", "ABORTED", "TIMED-OUT"): raise RuntimeError("Execução Apify falhou")
+            if run["status"] != "SUCCEEDED": return c
+            dataset_id = run["defaultDatasetId"]
+            items = request_json(f'https://api.apify.com/v2/datasets/{urllib.parse.quote(dataset_id)}/items?format=json&limit={c["limit_count"]}&offset=0', token)
+            if not isinstance(items, list): raise ValueError("Dataset inválido")
+            saved = 0
+            with db() as con:
+                for item in items[:c["limit_count"]]:
+                    item = {**item, "city": item.get("city") or c["city"], "state": item.get("state") or c["state"], "external_id": item.get("placeId") or item.get("place_id"), "maps_url": item.get("url")}
+                    _, created = upsert_lead(con, item, campaign_id, "apify_google_maps")
+                    saved += bool(created)
+                con.execute("UPDATE campaigns SET status='enriching',dataset_id=?,found=?,saved=?,updated_at=? WHERE id=?", (dataset_id, len(items), saved, now(), campaign_id))
+        elif c["status"] == "enriching":
+            if not os.environ.get("FIRECRAWL_API_KEY"):
+                with db() as con: con.execute("UPDATE campaigns SET status='partial',error=?,updated_at=? WHERE id=?", ("Firecrawl não configurado; leads aguardam enriquecimento.", now(), campaign_id))
+            else:
+                with db() as con:
+                    lead = con.execute("SELECT id FROM leads WHERE campaign_id=? ORDER BY id LIMIT 1 OFFSET ?", (campaign_id, c["enriched"])).fetchone()
+                if lead:
+                    try: enrich_lead(lead[0])
+                    except Exception as exc:
+                        with db() as con: con.execute("UPDATE campaigns SET error=? WHERE id=?", (error_text(exc), campaign_id))
+                    with db() as con: con.execute("UPDATE campaigns SET enriched=enriched+1,updated_at=? WHERE id=?", (now(), campaign_id))
+                else:
+                    with db() as con: con.execute("UPDATE campaigns SET status=?,updated_at=? WHERE id=?", ("partial" if c["error"] else "done", now(), campaign_id))
+    except Exception as exc:
+        with db() as con: con.execute("UPDATE campaigns SET status='failed',error=?,updated_at=? WHERE id=?", (error_text(exc), now(), campaign_id))
+    with db() as con: return rowdict(con.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone())
+
+
 class ApiError(Exception):
     def __init__(self, message, status=400): self.message, self.status = message, status
 
@@ -351,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
             user = self.user()
             if not user: raise ApiError("Entre para continuar", 401)
             if method != "GET" and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"]): raise ApiError("Sessão inválida; recarregue a página", 403)
-            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "csrf": user["csrf"], "apify": bool(os.environ.get("APIFY_TOKEN")), "firecrawl": bool(os.environ.get("FIRECRAWL_API_KEY"))})
+            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "csrf": user["csrf"], "apify": bool(os.environ.get("APIFY_TOKEN")), "firecrawl": bool(os.environ.get("FIRECRAWL_API_KEY")), "serverless": bool(os.environ.get("VERCEL"))})
             if method == "POST" and path == "/api/logout":
                 cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
                 with db() as con: con.execute("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(cookies.get("crm_session", "").encode()).hexdigest(),))
@@ -372,6 +429,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/api/campaigns":
                 with db() as con: return self.send([dict(x) for x in con.execute("SELECT * FROM campaigns ORDER BY id DESC LIMIT 100")])
             if method == "POST" and path == "/api/campaigns": return self.create_campaign()
+            match = re.fullmatch(r"/api/campaigns/(\d+)/advance", path)
+            if method == "POST" and match: return self.send(advance_campaign(int(match[1])))
             if method == "GET" and path == "/api/lists": return self.get_lists()
             if method == "POST" and path == "/api/lists": return self.create_list()
             match = re.fullmatch(r"/api/lists/(\d+)/items", path)
@@ -547,7 +606,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError): raise ApiError("Limite inválido")
         if not 1 <= limit <= 100: raise ApiError("Use um limite de 1 a 100 empresas")
         with db() as con: cur = con.execute("INSERT INTO campaigns(niche,city,state,limit_count,created_at,updated_at) VALUES(?,?,?,?,?,?)", (niche, city, state.upper()[:2], limit, now(), now()))
-        WORKER_WAKE.set()
+        if not os.environ.get("VERCEL"): WORKER_WAKE.set()
         return self.send({"id": cur.lastrowid, "status": "queued"}, 201)
 
     def get_lists(self):
