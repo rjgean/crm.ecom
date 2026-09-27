@@ -171,6 +171,8 @@ Modelo editável de primeira mensagem: “Olá! Vi a [nome da empresa] em [cidad
 - Telefone fixo ou número inválido não recebe selo de “WhatsApp verificado”. O CRM nunca promete verificar a existência de conta pelo formato do número.
 - Falhas da Apify ou Firecrawl aparecem na execução e não transformam ausência de evidência em certeza de que não há site.
 
-## Site institucional e Tooplate
+## Site institucional, landing page, Tooplate e Lovable
 
 No detalhe do lead, selecione “Site institucional” como oferta e use **Preparar briefing do site** para gerar um texto editável com os dados conhecidos e campos que precisam ser confirmados com o negócio. Há links para o [gerador de prompt de portfólio](https://www.tooplate.com/tools/ai-portfolio-page-prompt-generator), enviado como referência, e para o [gerador de landing page](https://www.tooplate.com/tools/ai-landing-page-prompt-generator), mais adequado para muitos comércios locais. O Tooplate gera e permite copiar/exportar **prompts**; a criação, aprovação do conteúdo, hospedagem e publicação do site ainda são etapas executadas fora do CRM. Nuvemshop e Yampi permanecem opções de entrega de lojas de e-commerce. O card FlowExtract é uma referência opcional de ator externo e não executa nenhuma consulta paga automaticamente.
+
+O botão **Gerar prompt Lovable** prepara um texto editável para **site institucional** ou **landing page**, usando os dados do lead e marcadores para informações pendentes. Copie o prompt e abra a [Lovable](https://lovable.dev/) para construir o site; revise com a empresa antes de publicar. O CRM não envia dados à Lovable automaticamente nem cria um projeto em seu nome.
