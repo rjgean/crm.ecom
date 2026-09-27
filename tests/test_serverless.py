@@ -31,8 +31,15 @@ class ServerlessCampaignTests(unittest.TestCase):
                 if "/search" in url: return {"success": True, "data": {"web": []}}
                 raise AssertionError(url)
 
-            with patch.object(server, "request_json", side_effect=provider):
+            with patch.object(server, "request_json", side_effect=provider) as call:
                 steps = [server.advance_campaign(campaign_id) for _ in range(4)]
+            self.assertEqual(call.call_args_list[0].args[2], {
+                "searchStringsArray": ["padaria"],
+                "locationQuery": "Rio, RJ, Brasil",
+                "maxCrawledPlacesPerSearch": 1,
+                "language": "pt-BR",
+                "maxReviews": 0,
+            })
             self.assertEqual([step["status"] for step in steps], ["running", "enriching", "enriching", "done"])
             self.assertEqual((steps[-1]["found"], steps[-1]["saved"], steps[-1]["enriched"]), (1, 1, 1))
 
