@@ -1,11 +1,11 @@
 import http.cookiejar
 import json
 import os
-import re
 import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from unittest.mock import patch
@@ -80,30 +80,34 @@ class CRMTests(unittest.TestCase):
                 self.assertEqual(status, 429)
                 self.assertIn("Limite gratuito", message["error"])
 
-    def test_collaborator_email_code_expiry_and_admin_permissions(self):
+    def test_collaborator_whatsapp_id_is_admin_issued_and_expires(self):
         self.login()
-        email = "teammate-access@example.test"
+        phone = "5521999988777"
         expiry = (server.datetime.now(server.timezone.utc) + server.timedelta(days=2)).isoformat()
-        self.assertEqual(self.request("POST", "/access/settings", {"owner_email": "owner-access@example.test", "email_from": "login@example.test"})[0], 200)
-        self.assertEqual(self.request("POST", "/access/collaborators", {"email": email, "expires_at": expiry})[0], 201)
-        with patch.dict(os.environ, {"RESEND_API_KEY": "fake-resend-token", "CRM_ACCESS_SECRET": "a-very-long-local-key-used-for-access-testing"}):
-            sent = []
-            def delivery(url, key, payload, timeout):
-                sent.append((url, payload))
-                return {"id": "email-test"}
-            with patch.object(server, "request_json", side_effect=delivery):
-                status, response = self.request("POST", "/access/request", {"email": email})
-                self.assertEqual(status, 200)
-                self.assertNotIn("code", response)
-                self.assertEqual(len(sent), 1)
-                self.assertEqual(sent[0][0], "https://api.resend.com/emails")
-                code = re.search(r"<strong>(\d{8})</strong>", sent[0][1]["html"])[1]
-                self.assertEqual(self.request("POST", "/access/request", {"email": "unknown-user@example.test"})[0], 200)
-                self.assertEqual(len(sent), 1)
-            self.assertEqual(self.request("POST", "/access/verify", {"email": email, "code": "99999999"})[0], 401)
+        self.assertEqual(self.request("POST", "/access/settings", {"admin_whatsapp": "21988887777"})[0], 200)
+        self.assertEqual(self.request("POST", "/access/collaborators", {"phone": "21999988777", "expires_at": expiry})[0], 201)
+        with patch.dict(os.environ, {"CRM_ACCESS_SECRET": "a-very-long-local-key-used-for-access-testing"}), patch.object(server, "request_json") as external:
+            status, response = self.request("POST", "/access/request", {"phone": phone})
+            self.assertEqual(status, 200)
+            self.assertNotIn("code", json.dumps(response))
+            self.assertIn("wa.me/5521988887777", response["whatsapp_url"])
+            self.assertEqual(self.request("POST", "/access/request", {"phone": "21999980000"})[0], 200)
             with server.db() as con:
-                self.assertEqual(con.execute("SELECT attempts FROM access_challenges WHERE email=?", (email,)).fetchone()[0], 1)
-            self.assertEqual(self.request("POST", "/access/verify", {"email": email, "code": code})[0], 200)
+                self.assertEqual(con.execute("SELECT COUNT(*) FROM phone_access_requests").fetchone()[0], 1)
+                identifier = con.execute("SELECT id FROM collaborator_phones WHERE phone=?", (phone,)).fetchone()[0]
+            self.assertEqual(self.request("POST", f"/access/collaborators/{identifier}/issue", {}, with_csrf=False)[0], 403)
+            status, result = self.request("POST", f"/access/collaborators/{identifier}/issue", {})
+            self.assertEqual(status, 200)
+            message = urllib.parse.unquote(result["whatsapp_url"].split("text=", 1)[1])
+            self.assertTrue(result["whatsapp_url"].startswith("https://wa.me/" + phone))
+            code = message.split("é ", 1)[1][:8]
+            self.assertEqual(self.request("POST", "/access/verify", {"phone": "21999980000", "code": code})[0], 401)
+            self.assertEqual(self.request("POST", "/access/verify", {"phone": phone, "code": "99999999"})[0], 401)
+            with server.db() as con:
+                self.assertEqual(con.execute("SELECT attempts FROM phone_challenges WHERE phone=?", (phone,)).fetchone()[0], 1)
+                self.assertNotIn(code, con.execute("SELECT code_hash FROM phone_challenges WHERE phone=?", (phone,)).fetchone()[0])
+            self.assertEqual(self.request("POST", "/access/verify", {"phone": phone, "code": code})[0], 200)
+            self.assertEqual(self.request("POST", "/access/verify", {"phone": phone, "code": code})[0], 401)
             status, me = self.request("GET", "/me")
             self.assertEqual((status, me["role"]), (200, "collaborator"))
             self.csrf = me["csrf"]
@@ -111,12 +115,11 @@ class CRMTests(unittest.TestCase):
             self.assertEqual(self.request("GET", "/access/collaborators")[0], 403)
             self.assertEqual(self.request("GET", "/leads")[0], 200)
             with server.db() as con:
-                con.execute("UPDATE collaborators SET expires_at=? WHERE email=?", (server.now(), email))
+                con.execute("UPDATE collaborator_phones SET expires_at=? WHERE phone=?", (server.now(), phone))
             self.assertEqual(self.request("GET", "/me")[0], 401)
             self.login()
-            with server.db() as con:
-                identifier = con.execute("SELECT id FROM collaborators WHERE email=?", (email,)).fetchone()[0]
             self.assertEqual(self.request("DELETE", f"/access/collaborators/{identifier}")[0], 200)
+            external.assert_not_called()
 
     def test_integration_credentials_are_encrypted_and_never_returned(self):
         self.login()
