@@ -6,3 +6,14 @@
 .sidebar-collapse{margin-left:auto;flex:none;width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--line);border-radius:8px;background:#203638;color:var(--bright);font-size:22px;line-height:1}.sidebar-collapse:hover,.sidebar-collapse:focus-visible{border-color:var(--bright);outline:none}.sidebar,.main{transition:width .18s ease,margin-left .18s ease}
 @media(min-width:951px){.sidebar.collapsed{width:72px}.sidebar.collapsed .sidebar-head{padding:20px 8px;gap:4px}.sidebar.collapsed .sidebar-head .brand,.sidebar.collapsed .nav-label,.sidebar.collapsed .sidebar-user,.sidebar.collapsed .sidebar-foot button{display:none}.sidebar.collapsed .sidebar-head .logo{width:30px;height:30px;flex:none}.sidebar.collapsed .sidebar-collapse{width:22px;padding:0;font-size:18px}.sidebar.collapsed .nav{padding:12px 8px}.sidebar.collapsed .nav-link{justify-content:center;padding:11px 8px}.sidebar.collapsed .nav-link .icon{width:22px;flex:none}.sidebar.collapsed .nav-group{height:12px;margin:8px 8px 3px;padding:0;border-top:1px solid var(--line);font-size:0}.sidebar.collapsed .sidebar-foot{min-height:16px;padding:6px}.main.sidebar-is-collapsed{margin-left:72px}}
 @media(max-width:950px){.sidebar-collapse{display:none}}
+
+/* Rolagem discreta com destaque ao interagir, inclusive no CRM horizontal. */
+html,.nav,.kanban,.drawer,.page,textarea{scrollbar-color:#397f75 #142124;scrollbar-width:thin}
+.nav,.kanban,.drawer{scroll-behavior:smooth}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:#142124;border-radius:12px}
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#367b70,#4dbca8);border:2px solid #142124;border-radius:12px;min-height:28px}
+::-webkit-scrollbar-thumb:hover{background:#8ff0d5;box-shadow:0 0 9px #4dbca880}
+::-webkit-scrollbar-thumb:active{background:#aafde6}
+::-webkit-scrollbar-corner{background:#142124}
+@media(prefers-reduced-motion:reduce){.nav,.kanban,.drawer{scroll-behavior:auto}}
