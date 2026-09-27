@@ -112,6 +112,37 @@ class CRMTests(unittest.TestCase):
             self.assertEqual(done["status"], "done")
             self.assertEqual(done["items"][0]["digital_status"], "incerto")
 
+    def test_instagram_search_uses_address_and_needs_confirmation(self):
+        self.login()
+        _, lead = self.request("POST", "/leads", {"name": "Ateliê Aurora", "address": "Rua das Palmeiras 42", "city": "Niterói", "state": "RJ"})
+        hits = {"success": True, "data": {"web": [
+            {"url": "https://www.instagram.com/atelieaurora/", "title": "Ateliê Aurora em Niterói", "description": "Loja na Rua das Palmeiras"},
+            {"url": "https://www.instagram.com/atelieoutra/", "title": "Ateliê Outra em São Paulo"},
+            {"url": "https://www.instagram.com/p/fotopost/", "title": "Ateliê Aurora em Niterói"},
+        ]}}
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "test-only"}), patch.object(server, "request_json", return_value=hits) as provider:
+            status, found = self.request("POST", f"/leads/{lead['id']}/instagram", {})
+        self.assertEqual(status, 200)
+        self.assertIn("Rua das Palmeiras 42", provider.call_args.args[2]["query"])
+        self.assertEqual([item["url"] for item in found["candidates"]], ["https://www.instagram.com/atelieaurora/"])
+        _, before = self.request("GET", f"/leads/{lead['id']}")
+        self.assertFalse(before["instagram"])
+        self.assertEqual(self.request("POST", f"/leads/{lead['id']}/instagram/confirm", {"url": "https://www.instagram.com/nao-pesquisado/"})[0], 400)
+        status, saved = self.request("POST", f"/leads/{lead['id']}/instagram/confirm", {"url": found["candidates"][0]["url"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["instagram"], "https://www.instagram.com/atelieaurora/")
+        self.assertEqual(saved["digital_status"], "apenas_redes")
+
+    def test_instagram_search_falls_back_to_city(self):
+        self.login()
+        _, lead = self.request("POST", "/leads", {"name": "Aurora Bordados", "address": "Rua Alfa 19", "city": "Niterói", "state": "RJ"})
+        hit = {"success": True, "data": {"web": [{"url": "https://instagram.com/aurorabordados", "title": "Aurora Bordados Niterói"}]}}
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "test-only"}), patch.object(server, "request_json", side_effect=[{"success": True, "data": {"web": []}}, hit]) as provider:
+            _, result = self.request("POST", f"/leads/{lead['id']}/instagram", {})
+        self.assertEqual(provider.call_count, 2)
+        self.assertIn('"Niterói"', provider.call_args_list[1].args[2]["query"])
+        self.assertEqual(len(result["candidates"]), 1)
+
     def test_login_csrf_crud_and_export(self):
         self.assertEqual(self.request("GET", "/leads")[0], 401)
         self.assertEqual(self.request("POST", "/login", {"email": "operator@example.test", "password": "wrong"})[0], 401)
