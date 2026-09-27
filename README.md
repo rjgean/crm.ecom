@@ -36,13 +36,15 @@ O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, 
 | --- | --- |
 | `TURSO_DATABASE_URL` | URL do banco Turso associado ao projeto; obrigatória para API. |
 | `TURSO_AUTH_TOKEN` | Token privado de acesso ao banco; obrigatório. |
-| `ADMIN_EMAIL` | E-mail de login do primeiro operador; obrigatório antes de inicializar o banco. |
-| `ADMIN_PASSWORD` | Senha inicial exclusiva de pelo menos 12 caracteres; obrigatória no primeiro acesso. |
+| `ADMIN_EMAIL` | Apenas execução local fora da Vercel: e-mail do operador. |
+| `ADMIN_PASSWORD` | Apenas execução local fora da Vercel: senha inicial com ao menos 12 caracteres. |
 | `APIFY_TOKEN` | Token privado da Apify; habilita campanhas. |
 | `FIRECRAWL_API_KEY` | Chave privada da Firecrawl; habilita enriquecimento. |
 | `COOKIE_SECURE` | Defina `1` em HTTPS (na Vercel já é o padrão). |
 
 Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira as chaves no formulário do CRM, em `.env.example`, no repositório ou em prints. A interface estática abre mesmo sem banco; a API devolve 503 até as duas variáveis Turso estarem válidas. A tela de busca avança as campanhas em etapas enquanto permanece aberta; se você sair dela, volte para continuar. Cada campanha pode gerar cobranças na Apify e Firecrawl. Para uso comercial, valide uma busca pequena com as chaves reais e os custos dos provedores antes de aumentar o volume.
+
+**Acesso na Vercel:** este projeto usa Vercel Authentication em todos os deployments `*.vercel.app`. Nos endereços protegidos, o CRM entra diretamente no painel e não exige `ADMIN_EMAIL` nem `ADMIN_PASSWORD`. A Vercel gerencia quais membros podem entrar. Mantenha **Deployment Protection → Vercel Authentication** ativa para Production e Preview. Os domínios personalizados não estão cobertos pela proteção atual: a API bloqueia o acesso por eles. Se desativar a proteção da Vercel, reative o login do aplicativo antes de publicar dados ou integrar chaves pagas. No servidor local, o acesso por e-mail e senha continua disponível.
 
 **Atenção aos ambientes:** o domínio de produção acompanha a branch `main`, enquanto o CRM desta PR está em `feat/prospeccao-sites-sem-site` (Preview). Ao conectar o Turso e editar variáveis para Preview, faça redeploy do deployment **dessa branch** ou envie outro commit nela. Um redeploy da produção recria apenas o commit da `main` e não atualiza o Preview.
 
