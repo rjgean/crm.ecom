@@ -45,8 +45,10 @@ def vercel_sso_only(host=""):
     # This exact production alias remains under All Deployments protection.
     # Never infer admin privilege from arbitrary *.vercel.app domains.
     protected = os.environ.get("CRM_PROTECTED_HOST", "crm-ecom-ten.vercel.app").lower().strip()
-    return bool(os.environ.get("VERCEL") and os.environ.get("VERCEL_ENV") in ("preview", "production") and
-                host.lower().split(":")[0] == protected and not public_host(host))
+    hostname = host.lower().split(":")[0]
+    return bool(os.environ.get("VERCEL") and not public_host(host) and
+                ((os.environ.get("VERCEL_ENV") == "preview" and (hostname == protected or bool(re.fullmatch(r"crm-ecom-[a-z0-9-]+-orange-even-projects\.vercel\.app", hostname)))) or
+                 (os.environ.get("VERCEL_ENV") == "production" and hostname == protected)))
 
 
 def turso_credentials():
@@ -64,10 +66,10 @@ def public_host(host):
                 host.lower().split(":")[0] == os.environ["CRM_PUBLIC_HOST"].lower().strip())
 
 
-def access_digest(email, code):
+def access_digest(code):
     material = os.environ.get("CRM_ACCESS_SECRET") or turso_credentials()[1] or os.environ.get("CRM_CREDENTIALS_KEY", "")
     if len(material) < 32: raise RuntimeError("Configure CRM_ACCESS_SECRET para o login por WhatsApp")
-    return hmac.new(material.encode(), (email + ":" + code).encode(), hashlib.sha256).hexdigest()
+    return hmac.new(material.encode(), ("crm-access-token:" + code).encode(), hashlib.sha256).hexdigest()
 
 
 def collaborator_phone(value):
@@ -158,7 +160,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS access_sessions(token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS collaborator_phones(id INTEGER PRIMARY KEY, phone TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, revoked_at TEXT, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS phone_challenges(phone TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, requested_at TEXT NOT NULL, requests INTEGER NOT NULL DEFAULT 1, window_started TEXT NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS phone_challenges_unique_code ON phone_challenges(code_hash);
         CREATE TABLE IF NOT EXISTS phone_sessions(token_hash TEXT PRIMARY KEY, phone TEXT NOT NULL, csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS access_login_limits(client_hash TEXT PRIMARY KEY, attempts INTEGER NOT NULL, started_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS phone_access_requests(phone TEXT PRIMARY KEY, requested_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, state TEXT, list_id INTEGER REFERENCES lead_lists(id), total INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_items(batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, PRIMARY KEY(batch_id,lead_id));
@@ -603,6 +607,9 @@ class Handler(BaseHTTPRequestHandler):
         with db() as con:
             access = rowdict(con.execute("SELECT phone,csrf FROM phone_sessions WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
             if access:
+                owner = con.execute("SELECT value FROM app_settings WHERE name='admin_whatsapp'").fetchone()
+                if owner and owner[0] == access["phone"]:
+                    return {"email": access["phone"], "id": None, "csrf": access["csrf"], "role": "admin", "sso": False}
                 identity = con.execute("SELECT 1 FROM collaborator_phones WHERE phone=? AND revoked_at IS NULL AND expires_at>?", (access["phone"], now())).fetchone()
                 if identity: return {"email": access["phone"], "id": None, "csrf": access["csrf"], "role": "collaborator", "sso": False}
             old = rowdict(con.execute("SELECT users.email,users.id,sessions.csrf FROM sessions JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
@@ -631,12 +638,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError("Acesso disponível apenas pelo endereço protegido da Vercel.", 403)
             if method == "GET" and path == "/api/access/status":
                 return self.send({"available": bool(not os.environ.get("VERCEL") or public_host(self.headers.get("Host", "")))})
-            if method == "POST" and path in ("/api/access/request", "/api/access/verify"):
+            if method == "POST" and path == "/api/access/verify":
                 host = self.headers.get("Host", "")
                 if os.environ.get("VERCEL") and not public_host(host): raise ApiError("Use o endereço público de colaboradores", 403)
                 if self.headers.get("Origin") != ("https://" if os.environ.get("VERCEL") else "http://") + host:
                     raise ApiError("Origem da requisição inválida", 403)
-                return self.request_access() if path.endswith("request") else self.verify_access()
+                return self.verify_access()
             if method == "POST" and path == "/api/login":
                 if os.environ.get("VERCEL"): raise ApiError("Use o acesso pela Vercel", 404)
                 return self.login()
@@ -657,6 +664,11 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST" and path == "/api/access/collaborators": return self.add_collaborator()
             match = re.fullmatch(r"/api/access/collaborators/(\d+)/issue", path)
             if match and method == "POST": return self.issue_access(int(match[1]))
+            if path == "/api/access/admin/issue" and method == "POST":
+                if user["role"] != "admin": raise ApiError("Apenas o administrador pode gerar este token", 403)
+                phone = admin_whatsapp()
+                if not phone: raise ApiError("Cadastre seu WhatsApp na aba Acessos antes de gerar seu token", 400)
+                return self.issue_phone_token(phone, minutes=60)
             match = re.fullmatch(r"/api/access/collaborators/(\d+)", path)
             if match and method == "DELETE": return self.revoke_collaborator(int(match[1]))
             if method == "POST" and path == "/api/integrations":
@@ -755,7 +767,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def list_collaborators(self):
         with db() as con:
-            return self.send([dict(row) for row in con.execute("SELECT c.id,c.phone,c.expires_at,c.revoked_at,c.created_at,r.requested_at FROM collaborator_phones c LEFT JOIN phone_access_requests r ON r.phone=c.phone ORDER BY c.id DESC LIMIT 250")])
+            return self.send([dict(row) for row in con.execute("SELECT id,phone,expires_at,revoked_at,created_at FROM collaborator_phones ORDER BY id DESC LIMIT 250")])
 
     def access_settings(self):
         return self.send({"admin_whatsapp": admin_whatsapp()})
@@ -765,6 +777,12 @@ class Handler(BaseHTTPRequestHandler):
         phone = collaborator_phone(number) if number else ""
         if number and not phone: raise ApiError("Informe um celular brasileiro válido com DDD")
         with db() as con:
+            if phone and con.execute("SELECT 1 FROM collaborator_phones WHERE phone=? AND revoked_at IS NULL", (phone,)).fetchone():
+                raise ApiError("Revogue primeiro o acesso deste número como colaborador")
+            previous = con.execute("SELECT value FROM app_settings WHERE name='admin_whatsapp'").fetchone()
+            if previous and previous[0] != phone:
+                con.execute("DELETE FROM phone_sessions WHERE phone=?", (previous[0],))
+                con.execute("DELETE FROM phone_challenges WHERE phone=?", (previous[0],))
             con.execute("INSERT INTO app_settings(name,value) VALUES('admin_whatsapp',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (phone,))
         return self.send({"ok": True})
 
@@ -772,6 +790,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self.json_body()
         phone = collaborator_phone(body.get("phone"))
         if not phone: raise ApiError("Informe um celular brasileiro válido com DDD")
+        if phone == admin_whatsapp(): raise ApiError("Esse WhatsApp está reservado ao administrador")
         try: expiry = datetime.fromisoformat(str(body.get("expires_at", "")).replace("Z", "+00:00"))
         except ValueError: raise ApiError("Defina a data e hora de expiração")
         if not expiry.tzinfo: raise ApiError("A expiração precisa incluir o fuso horário")
@@ -792,26 +811,14 @@ class Handler(BaseHTTPRequestHandler):
             con.execute("DELETE FROM phone_access_requests WHERE phone=?", (row[0],))
         return self.send({"ok": True})
 
-    def request_access(self):
-        phone = collaborator_phone(self.json_body().get("phone"))
-        generic = {"ok": True, "message": "Se este número estiver autorizado, o administrador poderá enviar seu ID por WhatsApp."}
-        if not phone: return self.send(generic)
-        admin_phone = admin_whatsapp()
-        if admin_phone:
-            generic["whatsapp_url"] = "https://wa.me/" + admin_phone + "?text=" + urllib.parse.quote("Olá! Solicitei meu ID de acesso ao CRM.")
-        with db() as con:
-            authorized = con.execute("SELECT 1 FROM collaborator_phones WHERE phone=? AND revoked_at IS NULL AND expires_at>?", (phone, now())).fetchone()
-            if authorized:
-                existing = con.execute("SELECT requested_at FROM phone_access_requests WHERE phone=?", (phone,)).fetchone()
-                if not existing or (datetime.now(timezone.utc) - datetime.fromisoformat(existing[0])).total_seconds() > 90:
-                    con.execute("INSERT INTO phone_access_requests(phone,requested_at) VALUES(?,?) ON CONFLICT(phone) DO UPDATE SET requested_at=excluded.requested_at", (phone, now()))
-        return self.send(generic)
-
     def issue_access(self, identifier):
         with db() as con:
             row = con.execute("SELECT phone FROM collaborator_phones WHERE id=? AND revoked_at IS NULL AND expires_at>?", (identifier, now())).fetchone()
             if not row: raise ApiError("Colaborador não encontrado ou acesso expirado", 404)
-            phone = row[0]
+        return self.issue_phone_token(row[0], minutes=10)
+
+    def issue_phone_token(self, phone, minutes):
+        with db() as con:
             previous = con.execute("SELECT requested_at,requests,window_started FROM phone_challenges WHERE phone=?", (phone,)).fetchone()
             current = datetime.now(timezone.utc)
             if previous:
@@ -821,30 +828,42 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError("Aguarde antes de gerar outro ID para este número", 429)
             count = previous[1] + 1 if previous and (current - datetime.fromisoformat(previous[2])).total_seconds() < 3600 else 1
             window_start = previous[2] if count > 1 else now()
-            code = f"{secrets.randbelow(100_000_000):08d}"
-            con.execute("INSERT INTO phone_challenges(phone,code_hash,expires_at,attempts,requested_at,requests,window_started) VALUES(?,?,?,?,?,?,?) ON CONFLICT(phone) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,requested_at=excluded.requested_at,requests=excluded.requests,window_started=excluded.window_started", (phone, access_digest(phone, code), (current + timedelta(minutes=10)).isoformat(timespec="seconds"), 0, now(), count, window_start))
-            con.execute("DELETE FROM phone_access_requests WHERE phone=?", (phone,))
-        message = "Olá! Seu ID de acesso ao CRM ECOM é " + code + ". Ele vale 10 minutos e só pode ser usado uma vez. Não compartilhe."
-        return self.send({"whatsapp_url": "https://wa.me/" + phone + "?text=" + urllib.parse.quote(message), "expires_in_seconds": 600})
+            alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+            code = "".join(secrets.choice(alphabet) for _ in range(12))
+            con.execute("INSERT INTO phone_challenges(phone,code_hash,expires_at,attempts,requested_at,requests,window_started) VALUES(?,?,?,?,?,?,?) ON CONFLICT(phone) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,requested_at=excluded.requested_at,requests=excluded.requests,window_started=excluded.window_started", (phone, access_digest(code), (current + timedelta(minutes=minutes)).isoformat(timespec="seconds"), 0, now(), count, window_start))
+        formatted_code = "-".join(code[i:i+4] for i in range(0, 12, 4))
+        message = "Olá! Seu token de acesso ao CRM ECOM é " + formatted_code + ". Ele vale " + str(minutes) + " minutos e só pode ser usado uma vez. Não compartilhe."
+        return self.send({"whatsapp_url": "https://wa.me/" + phone + "?text=" + urllib.parse.quote(message), "expires_in_seconds": minutes * 60})
 
     def verify_access(self):
         body = self.json_body()
-        phone = collaborator_phone(body.get("phone"))
-        code = str(body.get("code", "")).strip()
-        if not phone or not re.fullmatch(r"\d{8}", code): raise ApiError("ID de acesso inválido ou expirado", 401)
+        code = re.sub(r"[-\s]", "", str(body.get("code", ""))).upper()
+        if not re.fullmatch(r"[A-HJ-NP-Z2-9]{12}", code): raise ApiError("Token inválido ou expirado", 401)
+        key = hashlib.sha256(self.client_address[0].encode()).hexdigest()
         valid = False
         with db() as con:
-            challenge = rowdict(con.execute("SELECT code_hash,attempts FROM phone_challenges WHERE phone=? AND expires_at>?", (phone, now())).fetchone())
-            identity = con.execute("SELECT expires_at FROM collaborator_phones WHERE phone=? AND revoked_at IS NULL AND expires_at>?", (phone, now())).fetchone()
-            if not challenge or not identity or challenge["attempts"] >= 5: raise ApiError("ID de acesso inválido ou expirado", 401)
-            con.execute("UPDATE phone_challenges SET attempts=attempts+1 WHERE phone=?", (phone,))
-            valid = hmac.compare_digest(challenge["code_hash"], access_digest(phone, code))
+            limits = con.execute("SELECT attempts,started_at FROM access_login_limits WHERE client_hash=?", (key,)).fetchone()
+            current = datetime.now(timezone.utc)
+            attempts = limits[0] + 1 if limits and (current - datetime.fromisoformat(limits[1])).total_seconds() < 900 else 1
+            if attempts > 60: raise ApiError("Muitas tentativas. Tente novamente mais tarde.", 429)
+            started = limits[1] if attempts > 1 else now()
+            con.execute("INSERT INTO access_login_limits(client_hash,attempts,started_at) VALUES(?,?,?) ON CONFLICT(client_hash) DO UPDATE SET attempts=excluded.attempts,started_at=excluded.started_at", (key, attempts, started))
+            challenge = rowdict(con.execute("SELECT phone,code_hash,attempts FROM phone_challenges WHERE code_hash=? AND expires_at>?", (access_digest(code), now())).fetchone())
+            owner = con.execute("SELECT value FROM app_settings WHERE name='admin_whatsapp'").fetchone() if challenge else None
+            identity = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(timespec="seconds") if owner and owner[0] == challenge["phone"] else None
+            if challenge and not identity:
+                member = con.execute("SELECT expires_at FROM collaborator_phones WHERE phone=? AND revoked_at IS NULL AND expires_at>?", (challenge["phone"], now())).fetchone()
+                identity = member[0] if member else None
+            if challenge and identity and challenge["attempts"] < 5:
+                phone = challenge["phone"]
+                con.execute("UPDATE phone_challenges SET attempts=attempts+1 WHERE phone=?", (phone,))
+                valid = True
             if valid:
                 con.execute("DELETE FROM phone_challenges WHERE phone=?", (phone,))
                 session_token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-                expiry = min(datetime.now(timezone.utc) + timedelta(days=7), datetime.fromisoformat(identity[0]))
+                expiry = min(datetime.now(timezone.utc) + timedelta(days=7), datetime.fromisoformat(identity))
                 con.execute("INSERT INTO phone_sessions(token_hash,phone,csrf,expires_at) VALUES(?,?,?,?)", (hashlib.sha256(session_token.encode()).hexdigest(), phone, csrf, expiry.isoformat(timespec="seconds")))
-        if not valid: raise ApiError("ID de acesso inválido ou expirado", 401)
+        if not valid: raise ApiError("Token inválido ou expirado", 401)
         secure = "; Secure" if COOKIE_SECURE else ""
         age = max(0, int((expiry - datetime.now(timezone.utc)).total_seconds()))
         return self.send({"ok": True}, headers={"Set-Cookie": f"crm_session={session_token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{secure}"})
