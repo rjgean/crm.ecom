@@ -55,6 +55,29 @@ class CRMTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.csrf = value["csrf"]
 
+    def test_groq_draft_requires_real_preview_for_ready_site_claim(self):
+        self.login()
+        _, lead = self.request("POST", "/leads", {"name": "Loja Aurora", "city": "Niterói", "state": "RJ", "phone": "21999998888"})
+        path = f"/leads/{lead['id']}/message-draft"
+        with patch.dict(os.environ, {"GROQ_API_KEY": "test-groq-credential", "CRM_CREDENTIALS_KEY": "long-local-encryption-key-for-tests-abc"}):
+            self.assertEqual(self.request("POST", path, {}, with_csrf=False)[0], 403)
+            self.assertEqual(self.request("POST", path, {"preview_url": "https://preview.example"})[0], 400)
+            with patch.object(server, "request_json", return_value={"choices": [{"message": {"content": "Olá, Loja Aurora! Já criei seu site personalizado. Quer ver?"}}]}):
+                self.assertEqual(self.request("POST", path, {})[0], 502)
+            real = {"contact_name": "Ana", "instagram_observation": "Coleção de vestidos no Instagram", "preview_url": "https://preview.example", "preview_confirmed": True, "images_confirmed": True}
+            generated = "Ana, a coleção de vestidos da Loja Aurora merece uma vitrine! Criei uma prévia com as imagens da loja, sem custo: https://preview.example. Posso te mostrar?"
+            with patch.object(server, "request_json", return_value={"choices": [{"message": {"content": generated}}]}) as provider:
+                status, result = self.request("POST", path, real)
+                self.assertEqual(status, 200)
+                self.assertEqual(result["message"], generated)
+                self.assertEqual(provider.call_args.args[0], "https://api.groq.com/openai/v1/chat/completions")
+                self.assertEqual(provider.call_args.args[2]["model"], "openai/gpt-oss-20b")
+                self.assertIn('"nome_pessoa_confirmado": "Ana"', provider.call_args.args[2]["messages"][1]["content"])
+            with patch.object(server, "request_json", side_effect=urllib.error.HTTPError("https://api.groq.com", 429, "Too Many Requests", {}, None)):
+                status, message = self.request("POST", path, {})
+                self.assertEqual(status, 429)
+                self.assertIn("Limite gratuito", message["error"])
+
     def test_integration_credentials_are_encrypted_and_never_returned(self):
         self.login()
         secret = "apify-test-only-long-secret-123"
