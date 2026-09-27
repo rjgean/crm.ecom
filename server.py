@@ -44,12 +44,19 @@ def vercel_sso_only(host=""):
     return bool(os.environ.get("VERCEL") and os.environ.get("VERCEL_ENV") in ("preview", "production") and host.lower().split(":")[0].endswith(".vercel.app"))
 
 
+def turso_credentials():
+    """Accept direct variables or the namespaced keys provisioned by Turso."""
+    url = os.environ.get("TURSO_DATABASE_URL") or os.environ.get("crmecom_TURSO_DATABASE_URL")
+    token = os.environ.get("TURSO_AUTH_TOKEN") or os.environ.get("crmecom_TURSO_AUTH_TOKEN")
+    return url, token
+
+
 def db():
-    if os.environ.get("TURSO_DATABASE_URL"):
+    url, token = turso_credentials()
+    if url:
         import turso_serverless
-        token = os.environ.get("TURSO_AUTH_TOKEN")
         if not token: raise RuntimeError("TURSO_AUTH_TOKEN ausente")
-        con = turso_serverless.connect(os.environ["TURSO_DATABASE_URL"], auth_token=token)
+        con = turso_serverless.connect(url, auth_token=token)
         con.row_factory = turso_serverless.Row
         con.execute("PRAGMA foreign_keys=ON")
         return con
@@ -61,7 +68,7 @@ def db():
 
 
 def init_db():
-    if not os.environ.get("TURSO_DATABASE_URL"): DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not turso_credentials()[0]: DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db() as con:
         con.executescript("""
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL);
