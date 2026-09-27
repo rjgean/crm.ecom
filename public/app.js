@@ -6,7 +6,7 @@ const statuses = [['incerto','Incerto'],['sem_site_identificado','Sem site ident
 const nav = [
   ['painel','◫','Painel'],['buscar','⌕','Procurar Clientes'],['importar','⇧','Importar JSON'],['leads','▤','Meus Leads'],['listas','▦','Listas'],
   ['crm','◇','CRM'],['nichos','◎','Explorar Nichos'],['mensagens','✧','Mensagens'],['historico','◷','Histórico'],
-  ['exportacoes','⇩','Exportações'],['analytics','▥','Analytics'],['integracoes','⬡','Integrações'],['configuracoes','⚙','Configurações']
+  ['exportacoes','⇩','Exportações'],['analytics','▥','Analytics'],['integracoes','⬡','Integrações'],['configuracoes','⚙','Configurações'],['acessos','⌘','Acessos']
 ];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const label = (items, value) => items.find(x => x[0] === value)?.[1] || value || 'Não informado';
@@ -22,7 +22,7 @@ async function api(path, opts={}) {
   let response;
   try { response = await fetch('/api' + path, { credentials:'same-origin', headers, ...opts, body:opts.body ? JSON.stringify(opts.body) : undefined }); }
   catch { throw new Error('Sem conexão com o servidor.'); }
-  if (response.status === 401 && path !== '/login') { state.user=null; renderLogin(); throw new Error('Sessão expirada. Entre novamente.'); }
+  if (response.status === 401 && !['/login','/access/request','/access/verify'].includes(path)) { state.user=null; renderLogin(); throw new Error('Sessão expirada. Entre novamente.'); }
   if (response.headers.get('Content-Type')?.includes('text/csv')) return response.blob();
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'Não foi possível concluir a operação.');
@@ -41,11 +41,16 @@ function navigate(view) { location.hash='#/'+view; if(state.view === view) rende
 function renderUnavailable(message) {
   root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Painel indisponível</h1><p class="muted">${esc(message)}</p><button class="btn primary full" onclick="location.reload()">Tentar novamente</button></section></main>`;
 }
-function renderLogin() {
-  root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Seu próximo cliente começa aqui.</h1><p class="muted">Acesse seu painel de prospecção e vendas.</p><form id="login-form"><label class="field">E-mail<input name="email" type="email" autocomplete="username" required placeholder="seu@email.com"></label><label class="field">Senha<input name="password" type="password" autocomplete="current-password" required placeholder="Sua senha"></label><button class="btn primary full" type="submit">Entrar no painel →</button><div id="login-error" class="muted" role="alert"></div></form></section></main>`;
+function renderLogin(step='email', selectedEmail='') {
+  const publicAddress=!location.hostname.endsWith('.vercel.app') && location.hostname!=='localhost' && location.hostname!=='127.0.0.1';
+  root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Verificação de acesso</h1><p class="muted">Apenas colaboradores autorizados. Use o e-mail cadastrado pelo administrador.</p>${step==='code'?`<form id="access-verify-form"><label class="field">E-mail<input type="email" name="email" autocomplete="email" value="${esc(selectedEmail)}" readonly></label><label class="field">ID de acesso recebido por e-mail<input name="code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="one-time-code" required placeholder="00000000"></label><button class="btn primary full">Acessar ferramenta →</button><button class="btn ghost full" type="button" data-action="back-access">Usar outro e-mail</button><div id="login-error" class="muted" role="alert"></div></form>`:`<form id="access-request-form"><label class="field">E-mail cadastrado<input name="email" type="email" autocomplete="email" required placeholder="seu@email.com"></label><button class="btn primary full">Gerar ID de acesso →</button><div id="login-error" class="muted" role="alert"></div></form>`}${!publicAddress?'<button class="btn ghost full" type="button" data-action="legacy-login">Entrar com senha local</button>':''}</section></main>`;
 }
+function renderPasswordLogin(){
+  root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Acesso local</h1><form id="login-form"><label class="field">E-mail<input name="email" type="email" autocomplete="username" required></label><label class="field">Senha<input name="password" type="password" autocomplete="current-password" required></label><button class="btn primary full">Entrar</button><div id="login-error" class="muted" role="alert"></div></form><button class="btn ghost full" type="button" data-action="back-access">Usar ID por e-mail</button></section></main>`;
+}
+
 function shell() {
-  const n = nav.map(([id,icon,text],idx)=>`${idx===0||idx===6||idx===10?`<div class="nav-group">${idx===0?'Operação':idx===6?'Inteligência':'Gestão'}</div>`:''}<button title="${esc(text)}" aria-label="${esc(text)}" class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span class="nav-label">${text}</span></button>`).join('');
+  const n = nav.filter(([id])=>state.user.role==='admin'||!['configuracoes','acessos'].includes(id)).map(([id,icon,text],idx)=>`${idx===0||idx===6||idx===11?`<div class="nav-group">${idx===0?'Operação':idx===6?'Inteligência':'Ferramentas'}</div>`:''}<button title="${esc(text)}" aria-label="${esc(text)}" class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span class="nav-label">${text}</span></button>`).join('');
   root.innerHTML=`<div class="scrim" id="scrim"></div><div class="shell"><aside class="sidebar ${state.sidebarCollapsed?'collapsed':''}" id="sidebar"><div class="sidebar-head"><div class="logo">C</div><div class="brand">CRM<span>•</span>ECOM</div><button class="sidebar-collapse" data-action="toggle-sidebar" type="button" aria-label="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}" aria-expanded="${!state.sidebarCollapsed}" title="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}">${state.sidebarCollapsed?'›':'‹'}</button></div><nav class="nav">${n}</nav><div class="sidebar-foot"><div class="sidebar-user">Operador<br><strong>${esc(state.user.email)}</strong></div>${state.user.sso?'':'<button class="btn ghost full" data-action="logout">Sair da conta</button>'}</div></aside><div class="main ${state.sidebarCollapsed?'sidebar-is-collapsed':''}"><header class="topbar"><button class="mobile-toggle" data-action="menu" aria-label="Abrir menu">☰</button><div class="topbar-title"><h1 id="top-title">Painel</h1><small id="top-subtitle">Resumo da sua prospecção</small></div><span class="topbar-badge ${state.user.apify&&state.user.firecrawl?'':'offline'}">${state.user.apify&&state.user.firecrawl?'● Integrações prontas':'● Configuração parcial'}</span></header><main class="page" id="content"></main></div></div><div id="drawer-mount"></div>`;
 }
 function title(name, sub) { document.getElementById('top-title').textContent=name;document.getElementById('top-subtitle').textContent=sub; }
@@ -53,11 +58,11 @@ async function renderView() {
   if (!state.user) return;
   clearTimeout(state.importPoll);
   state.view=getView();
-  if (!nav.some(x=>x[0]===state.view)) state.view='painel';
+  if (!nav.some(x=>x[0]===state.view) || (state.user.role!=='admin' && ['configuracoes','acessos'].includes(state.view))) state.view='painel';
   shell();loading();
   const selected=document.querySelector(`.nav-link[data-view="${state.view}"]`);selected?.classList.add('active');
   try {
-    ({painel:dashboard,buscar:searchPage,importar:importPage,leads:leadsPage,listas:listsPage,crm:crmPage,nichos:nichesPage,mensagens:messagesPage,historico:historyPage,exportacoes:exportPage,analytics:analyticsPage,integracoes:integrationsPage,configuracoes:settingsPage})[state.view]();
+    ({painel:dashboard,buscar:searchPage,importar:importPage,leads:leadsPage,listas:listsPage,crm:crmPage,nichos:nichesPage,mensagens:messagesPage,historico:historyPage,exportacoes:exportPage,analytics:analyticsPage,integracoes:integrationsPage,configuracoes:settingsPage,acessos:accessPage})[state.view]();
   } catch(err) { failure(err); }
 }
 function metric(name,value){return `<div class="metric"><div class="metric-label">${esc(name)}</div><div class="metric-value">${esc(value)}</div></div>`}
@@ -167,7 +172,18 @@ function integrationsPage(){
 function settingsPage(){
   title('Configurações','Conexões e operação da ferramenta.');
   const keyForm=(service,name,configured)=>`<section class="panel"><h2>${name}</h2><span class="badge ${configured?'':'warning'}">${configured?'Configurada':'Pendente'}</span><form class="token-form" data-service="${service}" style="display:grid;gap:12px;margin-top:14px"><label class="field">Chave de API<input type="password" name="token" autocomplete="off" spellcheck="false" minlength="10" maxlength="4096" placeholder="Cole a chave aqui" required></label><button class="btn primary" type="submit">Salvar chave</button></form><p class="help" style="margin-top:12px">A chave salva não será exibida novamente. Cole uma nova para substituir a atual.</p><button class="btn ghost" data-remove-token="${service}" type="button">Remover chave salva</button></section>`;
-  document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Configuração</h1><p>Conecte suas ferramentas de prospecção.</p></div></div><div class="two-col">${keyForm('apify','Apify · Google Maps',state.user.apify)}${keyForm('firecrawl','Firecrawl · pesquisa web',state.user.firecrawl)}${keyForm('groq','Groq · mensagens com IA',state.user.groq)}<section class="panel"><h2>Contato e vendas</h2><p class="help">WhatsApp abre uma mensagem editada por lead. A ligação usa o número exibido para copiar ou abrir o discador; o serviço API4com continua externo. Sites e lojas são entregues por você na Nuvemshop ou Yampi.</p><div class="hr"></div><p class="help">Operador atual: ${esc(state.user.email)}.</p></section>${state.user.sso?'<section class="panel"><h2>Acesso</h2><p class="help">Seu acesso é controlado pela conta da Vercel. Gerencie membros e sessões no painel da Vercel.</p></section>':'<section class="panel"><h2>Alterar senha</h2><form id="password-form" style="display:grid;gap:12px"><label class="field">Senha atual<input type="password" name="current" autocomplete="current-password" required></label><label class="field">Nova senha (mínimo 12 caracteres)<input type="password" name="new" autocomplete="new-password" minlength="12" required></label><button class="btn primary">Salvar nova senha</button></form><p class="help" style="margin-top:12px">Após a alteração, todas as sessões são encerradas.</p></section>'}</div>`;
+  document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Configuração</h1><p>Conecte suas ferramentas de prospecção.</p></div></div><div class="two-col">${keyForm('apify','Apify · Google Maps',state.user.apify)}${keyForm('firecrawl','Firecrawl · pesquisa web',state.user.firecrawl)}${keyForm('groq','Groq · mensagens com IA',state.user.groq)}${keyForm('resend','Resend · envio de IDs de acesso',state.user.resend)}<section class="panel"><h2>Contato e vendas</h2><p class="help">WhatsApp abre uma mensagem editada por lead. A ligação usa o número exibido para copiar ou abrir o discador; o serviço API4com continua externo. Sites e lojas são entregues por você na Nuvemshop ou Yampi.</p><div class="hr"></div><p class="help">Operador atual: ${esc(state.user.email)}.</p></section>${state.user.sso?'<section class="panel"><h2>Acesso</h2><p class="help">Seu acesso é controlado pela conta da Vercel. Gerencie membros e sessões no painel da Vercel.</p></section>':'<section class="panel"><h2>Alterar senha</h2><form id="password-form" style="display:grid;gap:12px"><label class="field">Senha atual<input type="password" name="current" autocomplete="current-password" required></label><label class="field">Nova senha (mínimo 12 caracteres)<input type="password" name="new" autocomplete="new-password" minlength="12" required></label><button class="btn primary">Salvar nova senha</button></form><p class="help" style="margin-top:12px">Após a alteração, todas as sessões são encerradas.</p></section>'}</div>`;
+}
+
+async function accessPage(){
+  title('Acessos','Colaboradores e validade de uso da ferramenta.');
+  const el=document.getElementById('content');
+  el.innerHTML='<section class="panel"><div class="empty">Carregando acessos…</div></section>';
+  try{
+    const [settings,people]=await Promise.all([api('/access/settings'),api('/access/collaborators')]);
+    const defaultEnd=new Date(Date.now()+7*86400000);const localEnd=new Date(defaultEnd.getTime()-defaultEnd.getTimezoneOffset()*60000).toISOString().slice(0,16);
+    el.innerHTML=`<div class="section-title"><div><h1>Acessos</h1><p>Autorize e-mails e escolha quando o acesso termina.</p></div></div><div class="two-col"><section class="panel"><h2>Configurar envio do ID</h2><form id="access-settings-form" class="form-grid"><label class="field span2">Seu e-mail de administrador<input name="owner_email" type="email" value="${esc(settings.owner_email)}" required></label><label class="field span2">Remetente verificado no Resend<input name="email_from" type="email" value="${esc(settings.email_from)}" placeholder="acesso@seudominio.com" required></label><button class="btn primary">Salvar e-mails</button></form><p class="help" style="margin-top:12px">Chave Resend: ${settings.email_ready?'configurada':'pendente em Configurações'}. O ID chega por e-mail e vale 10 minutos. Confira o remetente antes de liberar o acesso externo.</p></section><section class="panel"><h2>Adicionar colaborador</h2><form id="collaborator-form" class="form-grid"><label class="field span2">E-mail da pessoa<input name="email" type="email" autocomplete="off" required placeholder="colaborador@email.com"></label><label class="field span2">Acesso válido até<input name="expires_at" type="datetime-local" value="${localEnd}" required></label><button class="btn primary">Salvar acesso</button></form><p class="help" style="margin-top:12px">O prazo definido aqui encerra o acesso mesmo com uma sessão aberta.</p></section></div><section class="panel" style="margin-top:16px"><h2>Colaboradores cadastrados</h2>${people.length?people.map(p=>`<div class="row-item"><div><strong>${esc(p.email)}</strong><small>${p.revoked_at?'Revogado em '+date(p.revoked_at):new Date(p.expires_at)<new Date()?'Expirado':'Válido até '+date(p.expires_at)}</small></div>${p.revoked_at?'':`<button class="btn danger" data-revoke-access="${p.id}">Revogar</button>`}</div>`).join(''):'<div class="empty">Nenhum colaborador cadastrado.</div>'}</section><section class="panel" style="margin-top:16px"><h2>Publicação para colaboradores</h2><p class="help">Use uma segunda implantação pública do CRM com o mesmo Turso e CRM_PUBLIC_HOST igual ao endereço dela. Mantenha esta implantação administrativa protegida pela Vercel.</p></section>`;
+  }catch(e){failure(e)}
 }
 
 async function openLead(id, compose=false){
@@ -254,11 +270,19 @@ async function submitForm(form){
   if(form.classList.contains('token-form')){
     try{await post('/integrations',{service:form.dataset.service,token:obj.token});form.reset();state.user=await api('/me');settingsPage();toast('Chave salva com segurança.')}catch(e){toast(e.message,true)}return;
   }
+  if(form.id==='access-request-form'){
+    try{const result=await post('/access/request',obj);renderLogin('code',obj.email.trim().toLowerCase());toast(result.message)}catch(e){document.getElementById('login-error').textContent=e.message}return;
+  }
+  if(form.id==='access-verify-form'){
+    try{await post('/access/verify',obj);state.user=await api('/me');renderView()}catch(e){document.getElementById('login-error').textContent=e.message}return;
+  }
   if(form.id==='login-form'){
     try{state.user=await post('/login',obj);state.user=await api('/me');renderView();}
     catch(e){document.getElementById('login-error').textContent=e.message}return;
   }
   try{
+    if(form.id==='access-settings-form'){await post('/access/settings',obj);toast('Configuração de acesso salva.');accessPage();return}
+    if(form.id==='collaborator-form'){await post('/access/collaborators',{email:obj.email,expires_at:new Date(obj.expires_at).toISOString()});toast('Acesso cadastrado.');accessPage();return}
     if(form.id==='apify-json-form'){const batch=await post('/import-apify',obj);state.batchId=batch.id;form.querySelector('[name=json]').value='';toast(`${batch.total} empresas importadas; ${batch.created} novas.`);loadImportBatches();return}
     if(form.id==='campaign-form'){await post('/campaigns',obj);toast('Busca iniciada. Acompanhe o progresso abaixo.');form.reset();loadCampaigns()}
     if(form.id==='new-lead-form'){const data=await post('/leads',obj);document.getElementById('new-lead-modal')?.remove();toast(data.created?'Lead cadastrado.':'Lead existente encontrado.');await leadsPage();openLead(data.id)}
@@ -271,7 +295,8 @@ async function submitForm(form){
 
 document.addEventListener('submit',event=>{event.preventDefault();submitForm(event.target)});
 document.addEventListener('click',async event=>{
-  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token],[data-import-batch],[data-import-resume],[data-find-instagram],[data-instagram-confirm]');if(!hit)return;
+  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token],[data-import-batch],[data-import-resume],[data-find-instagram],[data-instagram-confirm],[data-revoke-access]');if(!hit)return;
+  if(hit.dataset.revokeAccess){if(!confirm('Revogar este acesso agora?'))return;try{await api('/access/collaborators/'+hit.dataset.revokeAccess,{method:'DELETE'});toast('Acesso revogado.');accessPage()}catch(e){toast(e.message,true)}return}
   if(hit.dataset.view){navigate(hit.dataset.view);document.getElementById('sidebar')?.classList.remove('open');document.getElementById('scrim')?.classList.remove('show');return}
   if(hit.dataset.lead){openLead(Number(hit.dataset.lead));return}
   if(hit.dataset.compose){openLead(Number(hit.dataset.compose),true);return}
@@ -286,6 +311,8 @@ document.addEventListener('click',async event=>{
   if(hit.dataset.enrich){try{hit.disabled=true;await post('/leads/'+hit.dataset.enrich+'/enrich');toast('Pesquisa concluída. Confira as evidências.');openLead(Number(hit.dataset.enrich))}catch(e){toast(e.message,true)}finally{hit.disabled=false}return}
   if(hit.dataset.block){if(!confirm('Bloquear este contato e impedir novas importações pelo telefone?'))return;try{await post('/leads/'+hit.dataset.block+'/block');document.getElementById('drawer-mount').innerHTML='';toast('Contato bloqueado.');renderView()}catch(e){toast(e.message,true)}return}
   switch(hit.dataset.action){
+    case 'back-access':renderLogin();break;
+    case 'legacy-login':renderPasswordLogin();break;
     case 'logout': try{await post('/logout');state.user=null;renderLogin()}catch(e){toast(e.message,true)}break;
     case 'toggle-sidebar':{state.sidebarCollapsed=!state.sidebarCollapsed;try{localStorage.setItem('crm-sidebar-collapsed',state.sidebarCollapsed?'1':'0')}catch{}const sidebar=document.getElementById('sidebar');sidebar.classList.toggle('collapsed',state.sidebarCollapsed);document.querySelector('.main')?.classList.toggle('sidebar-is-collapsed',state.sidebarCollapsed);hit.textContent=state.sidebarCollapsed?'›':'‹';hit.setAttribute('aria-label',state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral');hit.setAttribute('aria-expanded',String(!state.sidebarCollapsed));hit.title=hit.getAttribute('aria-label');break}
     case 'menu': document.getElementById('sidebar')?.classList.add('open');document.getElementById('scrim')?.classList.add('show');break;
@@ -346,4 +373,4 @@ document.addEventListener('dragover',event=>{const col=event.target.closest('[da
 document.addEventListener('dragleave',event=>{const col=event.target.closest('[data-drop]');if(col&&!col.contains(event.relatedTarget))col.classList.remove('over')});
 document.addEventListener('drop',async event=>{const col=event.target.closest('[data-drop]');if(!col||!dragging)return;event.preventDefault();col.classList.remove('over');try{await api('/leads/'+dragging,{method:'PATCH',body:{stage:col.dataset.drop}});toast('Etapa atualizada.');crmPage()}catch(e){toast(e.message,true)}dragging=null});
 window.addEventListener('hashchange',renderView);
-(async()=>{try{state.user=await api('/me');state.view=getView();renderView()}catch(e){if(e.message==='Entre para continuar')renderLogin();else renderUnavailable(e.message)}})();
+(async()=>{try{state.user=await api('/me');state.view=getView();renderView()}catch(e){if(!state.user && (e.message==='Entre para continuar'||e.message.includes('Sessão expirada')))renderLogin();else renderUnavailable(e.message)}})();
