@@ -11,6 +11,13 @@ import server
 
 
 class ServerlessCampaignTests(unittest.TestCase):
+    def test_turso_marketplace_prefixed_credentials(self):
+        with patch.dict(os.environ, {
+            "crmecom_TURSO_DATABASE_URL": "libsql://example.turso.io",
+            "crmecom_TURSO_AUTH_TOKEN": "marketplace-token",
+        }, clear=True):
+            self.assertEqual(server.turso_credentials(), ("libsql://example.turso.io", "marketplace-token"))
+
     def test_campaign_advances_one_remote_step_per_request(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(server, "DB_PATH", Path(directory) / "crm.sqlite3"), patch.dict(os.environ, {"VERCEL": "1", "APIFY_TOKEN": "fake", "FIRECRAWL_API_KEY": "fake"}):
             server.init_db()
