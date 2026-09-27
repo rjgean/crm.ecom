@@ -38,6 +38,12 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def vercel_sso_only(host=""):
+    # Vercel Authentication protects this project's *.vercel.app deployments.
+    # Custom domains are excluded by its current project configuration.
+    return bool(os.environ.get("VERCEL") and os.environ.get("VERCEL_ENV") in ("preview", "production") and host.lower().split(":")[0].endswith(".vercel.app"))
+
+
 def db():
     if os.environ.get("TURSO_DATABASE_URL"):
         import turso_serverless
@@ -76,7 +82,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS list_items(list_id INTEGER NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, PRIMARY KEY(list_id, lead_id));
         CREATE TABLE IF NOT EXISTS suppression(phone_digits TEXT PRIMARY KEY, created_at TEXT NOT NULL);
         """)
-        if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+        if not os.environ.get("VERCEL") and not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
             password = os.environ.get("ADMIN_PASSWORD", "")
             if not email or len(password) < 12 or "@" not in email:
@@ -380,6 +386,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def user(self):
+        if vercel_sso_only(self.headers.get("Host", "")):
+            return {"email": "Acesso pela Vercel", "id": None, "csrf": "vercel-sso", "sso": True}
         cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
         token = cookies.get("crm_session", "")
         if not token: return None
@@ -404,16 +412,27 @@ class Handler(BaseHTTPRequestHandler):
                 name, ctype = STATIC[path]
                 return self.send((ROOT / "static" / name).read_bytes(), content_type=ctype)
             if not path.startswith("/api/"): raise ApiError("Página não encontrada", 404)
-            if method == "POST" and path == "/api/login": return self.login()
+            if os.environ.get("VERCEL") and not vercel_sso_only(self.headers.get("Host", "")):
+                raise ApiError("Acesso disponível apenas pelo endereço protegido da Vercel.", 403)
+            if method == "POST" and path == "/api/login":
+                if os.environ.get("VERCEL"): raise ApiError("Use o acesso pela Vercel", 404)
+                return self.login()
             user = self.user()
             if not user: raise ApiError("Entre para continuar", 401)
+            if user.get("sso") and method != "GET":
+                host = self.headers.get("Host", "")
+                if self.headers.get("Origin") != "https://" + host:
+                    raise ApiError("Origem da requisição inválida", 403)
             if method != "GET" and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"]): raise ApiError("Sessão inválida; recarregue a página", 403)
-            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "csrf": user["csrf"], "apify": bool(os.environ.get("APIFY_TOKEN")), "firecrawl": bool(os.environ.get("FIRECRAWL_API_KEY")), "serverless": bool(os.environ.get("VERCEL"))})
+            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "apify": bool(os.environ.get("APIFY_TOKEN")), "firecrawl": bool(os.environ.get("FIRECRAWL_API_KEY")), "serverless": bool(os.environ.get("VERCEL"))})
             if method == "POST" and path == "/api/logout":
+                if user.get("sso"): raise ApiError("Encerre a sessão na Vercel", 404)
                 cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
                 with db() as con: con.execute("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(cookies.get("crm_session", "").encode()).hexdigest(),))
                 return self.send({"ok": True}, headers={"Set-Cookie": "crm_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
-            if method == "POST" and path == "/api/change-password": return self.change_password(user)
+            if method == "POST" and path == "/api/change-password":
+                if user.get("sso"): raise ApiError("A senha é gerenciada pela Vercel", 404)
+                return self.change_password(user)
             if method == "GET" and path == "/api/dashboard": return self.dashboard()
             if method == "GET" and path == "/api/leads": return self.leads()
             if method == "POST" and path == "/api/leads": return self.create_lead()
