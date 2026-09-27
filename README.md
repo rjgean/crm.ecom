@@ -52,6 +52,28 @@ A pontuação é configurável e explicável, nunca uma caixa-preta: maior prior
 
 Deduplicar primeiro por identificador externo da fonte; depois por domínio ou telefone; por fim por nome normalizado + cidade/endereço com revisão para homônimos. Reexecuções devem atualizar o mesmo lead e preservar notas, etapas e histórico humano.
 
+## Referência de estrutura: LeadHunter v2
+
+Referência funcional e de organização: https://leaddhunterv2.lovable.app/painel (consultada em 27/09/2026). A interface pública mostra menu lateral fixo no desktop, menu recolhível no celular, cabeçalho com título e subtítulo, fundo escuro, cartões, destaque em verde-azulado e fontes Space Grotesk/DM Sans. O painel apresenta indicadores no topo e, abaixo, duas áreas: leads recentes e atividade recente. Replicar a hierarquia e os padrões de navegação em uma interface própria; não copiar código, marca ou mecanismo comercial de licença do projeto de referência.
+
+| Área observada na referência | Implementação adaptada para este CRM |
+| --- | --- |
+| Painel | Indicadores de empresas encontradas, leads salvos, sem site identificado, contatos iniciados, propostas, clientes e score médio; leads recentes e atividade recente. Cards devem ligar a listas filtradas. |
+| Procurar Clientes | Formulário nicho + cidade/UF; campanha Apify, progresso do enriquecimento Firecrawl; filtros por telefone, presença de site/loja, nota, avaliações e score; cartões de resultados com salvar, ver fontes, preparar WhatsApp e ligar. O filtro “sem site” usa o estado “sem site identificado” até revisão. |
+| Meus Leads | Tabela/lista pesquisável de contatos salvos com filtros, seleção, status digital, score, responsável e ações individuais; detalhe da empresa com evidências, histórico e proposta. |
+| Listas | Grupos manuais por campanha, cidade, segmento e prioridade, sem duplicar o cadastro de empresas. |
+| CRM | Quadro com cartões movidos por etapa, responsável, valor estimado, último contato e próxima ação; histórico preservado. |
+| Explorar Nichos | Sugestões de segmentos e dados agregados das campanhas já realizadas; atalho para iniciar busca no nicho selecionado. |
+| Mensagens IA | Dados da oferta, tom escolhido e sugestões baseadas apenas nas evidências do lead; editor e revisão individual antes de abrir o WhatsApp. Não enviar mensagens automaticamente. |
+| Histórico | Linha do tempo de buscas, enriquecimentos, revisões, mensagens preparadas, chamadas registradas e alterações do pipeline. |
+| Exportações | CSV dos leads filtrados com fontes e datas, respeitando bloqueios; registro de quando e por quem foi exportado. |
+| Analytics | Funil e conversão por cidade, nicho, fonte, produto e período; custo por lead qualificado e valores de propostas/ganhos. |
+| Configurações | Credenciais de integração protegidas no servidor, limites de busca, templates e equipe. |
+
+As páginas “Minha Licença” e “Créditos” são componentes comerciais da referência. Para uso interno, substituir por **Uso e custos** (execuções e créditos consumidos em Apify/Firecrawl) e **Configurações**; só haverá licença de usuário se surgir um produto de assinatura separado. No painel de referência, a busca usa nicho e localização e mostra resultados com dados como cidade, nota, telefone, site e ações; o CRM é um quadro com cartões arrastáveis. Esses padrões guiam os critérios de interface acima.
+
+**Navegação prioritária do MVP:** Painel → Procurar Clientes → Meus Leads → Listas → CRM → Mensagens → Histórico → Analytics → Configurações. Explorar Nichos e Exportações podem chegar na etapa seguinte, mantendo seus lugares previstos no menu. A UI deve mostrar estados de carregamento, vazio e falha; não exibir contagens fictícias.
+
 ## Telas do MVP
 
 1. **Campanhas:** criar busca por cidade e segmento, acompanhar execução, quantidade descoberta, enriquecida, duplicada, pendente de revisão e falha; exibir consumo e interromper novas buscas.
