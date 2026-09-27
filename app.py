@@ -1,9 +1,8 @@
 """WSGI entrypoint for Vercel; local development still uses server.py."""
 import io
-import os
 import threading
 from flask import Flask, Response, request
-from server import Handler, init_db
+from server import Handler, init_db, turso_credentials
 
 app = Flask(__name__)
 _ready = False
@@ -15,7 +14,7 @@ _lock = threading.Lock()
 def dispatch(path):
     global _ready
     if path.startswith("api/"):
-        if not os.environ.get("TURSO_DATABASE_URL") or not os.environ.get("TURSO_AUTH_TOKEN"):
+        if not all(turso_credentials()):
             return {"error": "Banco de dados Turso não configurado na hospedagem."}, 503
         if not _ready:
             with _lock:
