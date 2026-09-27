@@ -53,6 +53,12 @@ As buscas da Apify e do Firecrawl são cobradas nas contas dos provedores. O lim
 
 ## Fluxo
 
+### Importação manual pela Apify
+
+Em **Importar JSON**, cole o array exportado do dataset da Apify (ou um objeto que contenha `items`/`data`), dê um nome à lista e informe cidade/UF padrão se esses campos não constarem no JSON. A importação aceita até 500 empresas e faz deduplicação por ID do local, telefone/nome e nome/localidade. Campos como `title`, `categoryName`, `address`, `phone`, `website`, `url`, `placeId`, `totalScore` e `reviewsCount` são mapeados para o CRM. Nenhuma chamada à Apify é feita por esse caminho.
+
+Com Firecrawl configurado, mantenha a tela aberta: o CRM pesquisa uma empresa por vez e mostra progresso, classificação e links de evidência no detalhe do lead. Se sair, volte à tela para continuar; HTTP 429 da Firecrawl pausa o processamento até você clicar em **Retomar pesquisa**. Uma pesquisa sem evidência permanece **Incerto**, e “Sem site identificado” requer conferência manual. Chaves de API nunca devem ser coladas com o JSON de empresas.
+
 ```text
 Busca por cidade + segmento
   → Apify: Google Maps e atores configuráveis para diretórios públicos
