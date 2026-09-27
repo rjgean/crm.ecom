@@ -30,7 +30,7 @@ Use HTTPS em um proxy reverso, `COOKIE_SECURE=1`, banco SQLite em volume persist
 
 ### Publicar na Vercel
 
-O projeto inclui `app.py` (entrada WSGI), `vercel.json`, `pyproject.toml` e `requirements.txt`. Importe o repositório na Vercel com a raiz do projeto como diretório raiz, sem configurar comando de build. Conecte um banco **Turso Cloud persistente** (a integração no marketplace pode fornecer as duas variáveis `TURSO_*`). Em **Project → Settings → Environment Variables**, configure para Production e Preview:
+O projeto inclui `app.py` (entrada WSGI), `pyproject.toml` e `requirements.txt`. Importe o repositório na Vercel com a raiz do projeto como diretório raiz, sem configurar comando de build. Conecte um banco **Turso Cloud persistente** (a integração no marketplace pode fornecer as duas variáveis `TURSO_*`). Em **Project → Settings → Environment Variables**, configure para Production e Preview:
 
 | Variável | Uso |
 | --- | --- |
@@ -42,7 +42,7 @@ O projeto inclui `app.py` (entrada WSGI), `vercel.json`, `pyproject.toml` e `req
 | `FIRECRAWL_API_KEY` | Chave privada da Firecrawl; habilita enriquecimento. |
 | `COOKIE_SECURE` | Defina `1` em HTTPS (na Vercel já é o padrão). |
 
-Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira as chaves no formulário do CRM, em `.env.example`, no repositório ou em prints. A interface estática abre mesmo sem banco; a API devolve 503 até as duas variáveis Turso estarem válidas. A tela de busca avança as campanhas em etapas enquanto permanece aberta; se você sair dela, volte para continuar. Cada campanha pode gerar cobranças na Apify e Firecrawl. Para uso comercial, valide uma busca pequena com as chaves reais e os custos dos provedores antes de aumentar o volume. O limite de 60 segundos por chamada está em `vercel.json`.
+Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira as chaves no formulário do CRM, em `.env.example`, no repositório ou em prints. A interface estática abre mesmo sem banco; a API devolve 503 até as duas variáveis Turso estarem válidas. A tela de busca avança as campanhas em etapas enquanto permanece aberta; se você sair dela, volte para continuar. Cada campanha pode gerar cobranças na Apify e Firecrawl. Para uso comercial, valide uma busca pequena com as chaves reais e os custos dos provedores antes de aumentar o volume.
 
 As buscas da Apify e do Firecrawl são cobradas nas contas dos provedores. O limite de 1 a 100 empresas restringe a leitura e os resultados pretendidos; custos finais e limites efetivos do ator precisam ser validados na conta conectada. O app não envia mensagens automaticamente nem comprova que um número tem WhatsApp. A API4com é usada à parte para ligação.
 
