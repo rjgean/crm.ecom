@@ -198,6 +198,16 @@ def request_json(url, token, payload=None, timeout=35):
         return json.loads(resp.read(5_000_000))
 
 
+def apify_actor_input(campaign):
+    return {
+        "searchStringsArray": [campaign["niche"]],
+        "locationQuery": f'{campaign["city"]}, {campaign["state"]}, Brasil',
+        "maxCrawledPlacesPerSearch": campaign["limit_count"],
+        "language": "pt-BR",
+        "maxReviews": 0,
+    }
+
+
 def score_lead(lead):
     status = lead.get("digital_status") or "incerto"
     score = {"sem_site_identificado": 65, "apenas_redes": 72, "site_sem_loja": 48, "marketplace": 55, "loja_virtual": 10, "incerto": 25}.get(status, 25)
@@ -305,7 +315,7 @@ def run_campaign(c):
     run_id = c["apify_run_id"]
     dataset_id = c["dataset_id"]
     if not run_id:
-        actor_input = {"searchStringsArray": [f'{c["niche"]} em {c["city"]}, {c["state"]}, Brasil'], "maxCrawledPlacesPerSearch": c["limit_count"], "language": "pt", "maxReviews": 0}
+        actor_input = apify_actor_input(c)
         result = request_json("https://api.apify.com/v2/actors/compass~crawler-google-places/runs", token, actor_input)
         run_id = result["data"]["id"]
         with db() as con: con.execute("UPDATE campaigns SET apify_run_id=?,updated_at=? WHERE id=?", (run_id, now(), c["id"]))
@@ -369,7 +379,7 @@ def advance_campaign(campaign_id):
             with db() as con:
                 claimed = con.execute("UPDATE campaigns SET status='running',updated_at=? WHERE id=? AND status='queued'", (now(), campaign_id)).rowcount
             if not claimed: return c
-            actor_input = {"searchStringsArray": [f'{c["niche"]} em {c["city"]}, {c["state"]}, Brasil'], "maxCrawledPlacesPerSearch": c["limit_count"], "language": "pt", "maxReviews": 0}
+            actor_input = apify_actor_input(c)
             result = request_json("https://api.apify.com/v2/actors/compass~crawler-google-places/runs", token, actor_input)
             with db() as con: con.execute("UPDATE campaigns SET apify_run_id=?,updated_at=? WHERE id=?", (result["data"]["id"], now(), campaign_id))
         elif c["status"] == "running":
