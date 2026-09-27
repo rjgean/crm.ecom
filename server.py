@@ -31,7 +31,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1" if os.environ.get("VERCEL") else "0") == "1"
 STAGES = ["novo", "pesquisado", "qualificado", "contato", "respondeu", "reuniao", "proposta", "negociacao", "ganho", "perdido"]
 STATUSES = ["incerto", "sem_site_identificado", "apenas_redes", "site_sem_loja", "marketplace", "loja_virtual"]
-STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/styles.css": ("styles.css", "text/css; charset=utf-8")}
+STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/styles.css": ("styles.css", "text/css; charset=utf-8"), "/favicon.svg": ("favicon.svg", "image/svg+xml")}
 WORKER_WAKE = threading.Event()
 LOGIN_FAILURES = {}
 LOGIN_LOCK = threading.Lock()
