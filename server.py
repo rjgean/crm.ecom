@@ -46,7 +46,7 @@ def vercel_sso_only(host=""):
     # Never infer admin privilege from arbitrary *.vercel.app domains.
     protected = os.environ.get("CRM_PROTECTED_HOST", "crm-ecom-ten.vercel.app").lower().strip()
     hostname = host.lower().split(":")[0]
-    return bool(os.environ.get("VERCEL") and not public_host(host) and
+    return bool(os.environ.get("VERCEL") and not os.environ.get("SUPABASE_URL") and not public_host(host) and
                 ((os.environ.get("VERCEL_ENV") == "preview" and (hostname == protected or bool(re.fullmatch(r"crm-ecom-[a-z0-9-]+-orange-even-projects\.vercel\.app", hostname)))) or
                  (os.environ.get("VERCEL_ENV") == "production" and hostname == protected)))
 
@@ -117,6 +117,10 @@ def save_service_key(service, value):
 
 
 def db():
+    postgres_url = os.environ.get("SUPABASE_DB_URL")
+    if postgres_url:
+        from postgres_backend import connect
+        return connect(postgres_url)
     url, token = turso_credentials()
     if url:
         import turso_serverless
@@ -133,6 +137,16 @@ def db():
 
 
 def init_db():
+    if os.environ.get("SUPABASE_DB_URL"):
+        with db() as con:
+            con.executescript((ROOT / "schema" / "supabase.sql").read_text())
+            if not os.environ.get("VERCEL") and not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+                email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+                password = os.environ.get("ADMIN_PASSWORD", "")
+                if not email or len(password) < 12 or "@" not in email:
+                    raise RuntimeError("Defina ADMIN_EMAIL e ADMIN_PASSWORD para iniciar localmente")
+                con.execute("INSERT INTO users(email,password_hash) VALUES(?,?) ON CONFLICT(email) DO NOTHING", (email, hash_password(password)))
+        return
     if not turso_credentials()[0]: DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db() as con:
         con.executescript("""
@@ -164,6 +178,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS phone_sessions(token_hash TEXT PRIMARY KEY, phone TEXT NOT NULL, csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS access_login_limits(client_hash TEXT PRIMARY KEY, attempts INTEGER NOT NULL, started_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS phone_access_requests(phone TEXT PRIMARY KEY, requested_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS google_users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, revoked_at TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS google_sessions(token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS oauth_states(token_hash TEXT PRIMARY KEY, verifier TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, state TEXT, list_id INTEGER REFERENCES lead_lists(id), total INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_items(batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, PRIMARY KEY(batch_id,lead_id));
         """)
@@ -531,7 +548,7 @@ def import_summary(batch_id):
     with db() as con:
         batch = rowdict(con.execute("SELECT * FROM import_batches WHERE id=?", (batch_id,)).fetchone())
         if not batch: raise ApiError("Importação não encontrada", 404)
-        batch["items"] = [dict(row) for row in con.execute("SELECT i.lead_id,i.status,i.error,l.name,l.city,l.state,l.website,l.instagram,l.digital_status,l.score FROM import_items i JOIN leads l ON l.id=i.lead_id WHERE i.batch_id=? ORDER BY i.rowid LIMIT 500", (batch_id,))]
+        batch["items"] = [dict(row) for row in con.execute("SELECT i.lead_id,i.status,i.error,l.name,l.city,l.state,l.website,l.instagram,l.digital_status,l.score FROM import_items i JOIN leads l ON l.id=i.lead_id WHERE i.batch_id=? ORDER BY i.lead_id LIMIT 500", (batch_id,))]
     batch["processed"] = sum(item["status"] in ("done", "error", "skipped") for item in batch["items"])
     return batch
 
@@ -542,7 +559,7 @@ def advance_import(batch_id):
         batch = con.execute("SELECT status,updated_at FROM import_batches WHERE id=?", (batch_id,)).fetchone()
         if not batch: raise ApiError("Importação não encontrada", 404)
         if batch[0] in ("done", "paused"): return import_summary(batch_id)
-        item = con.execute("SELECT lead_id FROM import_items WHERE batch_id=? AND status='pending' ORDER BY rowid LIMIT 1", (batch_id,)).fetchone()
+        item = con.execute("SELECT lead_id FROM import_items WHERE batch_id=? AND status='pending' ORDER BY lead_id LIMIT 1", (batch_id,)).fetchone()
         if item:
             lead_id = item[0]
             claimed = con.execute("UPDATE import_items SET status='processing' WHERE batch_id=? AND lead_id=? AND status='pending'", (batch_id, lead_id)).rowcount
@@ -597,6 +614,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def redirect(self, location, cookies=()):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        for cookie in cookies:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+
     def user(self):
         if vercel_sso_only(self.headers.get("Host", "")):
             return {"email": "Acesso pela Vercel", "id": None, "csrf": "vercel-sso", "sso": True, "role": "admin"}
@@ -605,6 +631,16 @@ class Handler(BaseHTTPRequestHandler):
         if not token: return None
         digest = hashlib.sha256(token.encode()).hexdigest()
         with db() as con:
+            google = rowdict(con.execute("SELECT email,csrf FROM google_sessions WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
+            if google:
+                owner = os.environ.get("CRM_ADMIN_GOOGLE_EMAIL", "").strip().lower()
+                if owner and hmac.compare_digest(google["email"], owner):
+                    return {"email": google["email"], "id": None, "csrf": google["csrf"], "role": "admin", "sso": False, "google": True}
+                authorized = con.execute("SELECT 1 FROM google_users WHERE email=? AND revoked_at IS NULL AND expires_at>?", (google["email"], now())).fetchone()
+                if authorized:
+                    return {"email": google["email"], "id": None, "csrf": google["csrf"], "role": "collaborator", "sso": False, "google": True}
+            if os.environ.get("SUPABASE_URL"):
+                return None
             access = rowdict(con.execute("SELECT phone,csrf FROM phone_sessions WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
             if access:
                 owner = con.execute("SELECT value FROM app_settings WHERE name='admin_whatsapp'").fetchone()
@@ -638,7 +674,14 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError("Acesso disponível apenas pelo endereço protegido da Vercel.", 403)
             if method == "GET" and path == "/api/access/status":
                 return self.send({"available": bool(not os.environ.get("VERCEL") or public_host(self.headers.get("Host", "")))})
+            if method == "GET" and path == "/api/auth/config":
+                return self.send({"google": bool(os.environ.get("SUPABASE_URL")), "available": bool(not os.environ.get("VERCEL") or public_host(self.headers.get("Host", "")))})
+            if method == "GET" and path == "/api/auth/google/start":
+                return self.start_google_login()
+            if method == "GET" and path == "/api/auth/google/callback":
+                return self.complete_google_login()
             if method == "POST" and path == "/api/access/verify":
+                if os.environ.get("SUPABASE_URL"): raise ApiError("Use o login com Google", 404)
                 host = self.headers.get("Host", "")
                 if os.environ.get("VERCEL") and not public_host(host): raise ApiError("Use o endereço público de colaboradores", 403)
                 if self.headers.get("Origin") != ("https://" if os.environ.get("VERCEL") else "http://") + host:
@@ -654,7 +697,15 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get("Origin") != "https://" + host:
                     raise ApiError("Origem da requisição inválida", 403)
             if method != "GET" and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"]): raise ApiError("Sessão inválida; recarregue a página", 403)
-            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "role": user["role"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "resend": bool(service_key("resend")), "serverless": bool(os.environ.get("VERCEL"))})
+            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "role": user["role"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "google": bool(user.get("google")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "resend": bool(service_key("resend")), "serverless": bool(os.environ.get("VERCEL"))})
+            if path == "/api/access/google-users":
+                if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
+                if method == "GET": return self.list_google_users()
+                if method == "POST": return self.add_google_user()
+            match = re.fullmatch(r"/api/access/google-users/(\d+)", path)
+            if match and method == "DELETE":
+                if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
+                return self.revoke_google_user(int(match[1]))
             if path.startswith("/api/access/collaborators") and user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
             if path == "/api/access/settings":
                 if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
@@ -692,6 +743,7 @@ class Handler(BaseHTTPRequestHandler):
                     con.execute("DELETE FROM sessions WHERE token_hash=?", (digest,))
                     con.execute("DELETE FROM access_sessions WHERE token_hash=?", (digest,))
                     con.execute("DELETE FROM phone_sessions WHERE token_hash=?", (digest,))
+                    con.execute("DELETE FROM google_sessions WHERE token_hash=?", (digest,))
                 return self.send({"ok": True}, headers={"Set-Cookie": "crm_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
             if method == "POST" and path == "/api/change-password":
                 if user["role"] != "admin" or not user["id"]: raise ApiError("Senha não disponível para este acesso", 403)
@@ -764,6 +816,85 @@ class Handler(BaseHTTPRequestHandler):
             con.execute("INSERT INTO sessions(token_hash,user_id,csrf,expires_at) VALUES(?,?,?,?)", (hashlib.sha256(token.encode()).hexdigest(), user["id"], csrf, (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(timespec="seconds")))
         secure = "; Secure" if COOKIE_SECURE else ""
         return self.send({"email": email, "csrf": csrf}, headers={"Set-Cookie": f"crm_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800{secure}"})
+
+    def start_google_login(self):
+        import supabase_auth
+
+        host = self.headers.get("Host", "")
+        if os.environ.get("VERCEL") and not public_host(host):
+            raise ApiError("Use o domínio público do CRM", 403)
+        scheme = "https" if os.environ.get("VERCEL") else "http"
+        callback = f"{scheme}://{host}/api/auth/google/callback"
+        try:
+            state, verifier, destination = supabase_auth.start_url(callback)
+        except ValueError as exc:
+            raise ApiError(str(exc), 503)
+        with db() as con:
+            con.execute("DELETE FROM oauth_states WHERE expires_at<?", (now(),))
+            con.execute("INSERT INTO oauth_states(token_hash,verifier,expires_at) VALUES(?,?,?)", (hashlib.sha256(state.encode()).hexdigest(), verifier, (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(timespec="seconds")))
+        secure = "; Secure" if COOKIE_SECURE else ""
+        return self.redirect(destination, [f"crm_oauth={state}; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=600{secure}"])
+
+    def complete_google_login(self):
+        import supabase_auth
+
+        args = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        code = args.get("code", [""])[0]
+        cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
+        state = cookies.get("crm_oauth", "")
+        if not code or not 10 <= len(code) <= 4096 or len(state) < 32:
+            return self.redirect("/?auth_error=1")
+        with db() as con:
+            challenge = con.execute("SELECT verifier FROM oauth_states WHERE token_hash=? AND expires_at>?", (hashlib.sha256(state.encode()).hexdigest(), now())).fetchone()
+            con.execute("DELETE FROM oauth_states WHERE token_hash=?", (hashlib.sha256(state.encode()).hexdigest(),))
+        if not challenge:
+            return self.redirect("/?auth_error=1")
+        try:
+            email = supabase_auth.exchange(code, challenge[0])
+            owner = os.environ.get("CRM_ADMIN_GOOGLE_EMAIL", "").strip().lower()
+            with db() as con:
+                expiry = datetime.now(timezone.utc) + timedelta(hours=12)
+                if not hmac.compare_digest(email, owner):
+                    row = con.execute("SELECT expires_at FROM google_users WHERE email=? AND revoked_at IS NULL AND expires_at>?", (email, now())).fetchone()
+                    if not row:
+                        return self.redirect("/?auth_error=2")
+                    expiry = min(expiry, datetime.fromisoformat(row[0]))
+                session, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+                con.execute("INSERT INTO google_sessions(token_hash,email,csrf,expires_at) VALUES(?,?,?,?)", (hashlib.sha256(session.encode()).hexdigest(), email, csrf, expiry.isoformat(timespec="seconds")))
+        except ValueError:
+            return self.redirect("/?auth_error=1")
+        secure = "; Secure" if COOKIE_SECURE else ""
+        age = max(0, int((expiry - datetime.now(timezone.utc)).total_seconds()))
+        return self.redirect("/", [f"crm_session={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{secure}", f"crm_oauth=; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=0{secure}"])
+
+    def list_google_users(self):
+        with db() as con:
+            return self.send([dict(row) for row in con.execute("SELECT id,email,expires_at,revoked_at,created_at FROM google_users ORDER BY id DESC LIMIT 250")])
+
+    def add_google_user(self):
+        body = self.json_body()
+        email = str(body.get("email") or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9._%+\-]{1,64}@[a-z0-9.\-]{3,190}", email):
+            raise ApiError("Informe o e-mail da conta Google do colaborador")
+        if email == os.environ.get("CRM_ADMIN_GOOGLE_EMAIL", "").strip().lower():
+            raise ApiError("Este e-mail está reservado ao administrador")
+        try: expiry = datetime.fromisoformat(str(body.get("expires_at", "")).replace("Z", "+00:00"))
+        except ValueError: raise ApiError("Defina a data de expiração")
+        if not expiry.tzinfo: raise ApiError("A expiração precisa incluir o fuso horário")
+        expiry = expiry.astimezone(timezone.utc)
+        if not timedelta(minutes=5) <= expiry - datetime.now(timezone.utc) <= timedelta(days=365):
+            raise ApiError("Defina validade entre 5 minutos e 365 dias")
+        with db() as con:
+            con.execute("INSERT INTO google_users(email,expires_at,revoked_at,created_at) VALUES(?,?,NULL,?) ON CONFLICT(email) DO UPDATE SET expires_at=excluded.expires_at,revoked_at=NULL", (email, expiry.isoformat(timespec="seconds"), now()))
+        return self.send({"ok": True}, 201)
+
+    def revoke_google_user(self, identifier):
+        with db() as con:
+            row = con.execute("SELECT email FROM google_users WHERE id=?", (identifier,)).fetchone()
+            if not row: raise ApiError("Acesso não encontrado", 404)
+            con.execute("UPDATE google_users SET revoked_at=? WHERE id=?", (now(), identifier))
+            con.execute("DELETE FROM google_sessions WHERE email=?", (row[0],))
+        return self.send({"ok": True})
 
     def list_collaborators(self):
         with db() as con:
