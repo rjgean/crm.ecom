@@ -142,6 +142,7 @@ class CRMTests(unittest.TestCase):
                     row = dict(con.execute("SELECT * FROM campaigns WHERE id=?", (campaign["id"],)).fetchone())
                 server.run_campaign(row)
                 self.assertEqual(provider.call_count, 4)
+                self.assertEqual(provider.call_args_list[0].args[2]["language"], "pt-BR")
             _, campaigns = self.request("GET", "/campaigns")
             done = next(x for x in campaigns if x["id"] == campaign["id"])
             self.assertEqual(done["status"], "done")
