@@ -4,16 +4,16 @@
 
 Encontrar empresas e profissionais locais que ainda não possuem site próprio ou loja virtual, reunir evidências públicas sobre a presença digital de cada negócio e organizar a venda consultiva de sites e lojas criadas pelo operador na Nuvemshop ou Yampi. Oferta inicial: implantação entre R$ 1.500 e R$ 3.000, com valor definido na proposta individual.
 
-**Estado atual:** MVP executável com interface, banco SQLite local ou Turso remoto, login de operador, campanhas Apify, enriquecimento Firecrawl, CRM, contatos individuais e exportação. As integrações externas foram testadas com respostas simuladas; a execução ao vivo exige as chaves reais e um teste de ponta a ponta no ambiente de operação. Ainda não há implantação pública nem integração direta com API4com, Nuvemshop, Yampi ou Tooplate.
+**Estado atual:** MVP com interface, SQLite local ou Turso remoto, campanhas Apify, enriquecimento Firecrawl, CRM, contatos individuais e exportação. Na Vercel, a autenticação é gerenciada pela proteção de deployment; localmente há login de operador. As integrações externas foram testadas com respostas simuladas; a execução ao vivo exige as chaves reais e um teste de ponta a ponta no ambiente de operação. API4com, Nuvemshop, Yampi e Tooplate são ferramentas externas usadas pelo operador.
 
 ## Iniciar a aplicação
 
-Requisitos: Python 3.11+; nenhuma dependência de terceiros é necessária para executar o servidor.
+Requisitos: Python 3.12+ e `pip install -r requirements.txt`.
 
 1. Configure as variáveis de `.env.example` no ambiente. Para uma primeira execução local, use um e-mail de operador e uma senha exclusiva de pelo menos 12 caracteres. O arquivo `.env` **não é carregado automaticamente**: exporte as variáveis no shell, no gerenciador de serviço ou na hospedagem.
 2. Execute `python server.py` e abra `http://127.0.0.1:8080` (ou o HOST/PORT definidos). O diretório `data/` será criado automaticamente para o SQLite.
 3. Entre com as credenciais configuradas; altere a senha em Configurações após o primeiro acesso. A senha inicial do ambiente só é usada ao criar o banco, não redefine uma senha já alterada.
-4. Defina `APIFY_TOKEN` e `FIRECRAWL_API_KEY` no servidor e reinicie para ativar a busca e o enriquecimento. Sem elas, cadastro manual, importação CSV, listas, CRM, mensagens e exportação funcionam normalmente.
+4. Insira as chaves da Apify e Firecrawl em **Configurações**. Em execução local, defina antes uma variável `CRM_CREDENTIALS_KEY` com um valor aleatório e durável de pelo menos 32 caracteres. Como alternativa, configure `APIFY_TOKEN` e `FIRECRAWL_API_KEY` no servidor. Sem chaves, cadastro manual, importação CSV, listas, CRM, mensagens e exportação funcionam normalmente.
 5. Para testar: `python -m unittest discover -s tests -v` e `node --check static/app.js` se tiver Node instalado.
 
 Exemplo local (troque os valores antes de usar):
@@ -40,6 +40,7 @@ O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, 
 | `ADMIN_PASSWORD` | Apenas execução local fora da Vercel: senha inicial com ao menos 12 caracteres. |
 | `APIFY_TOKEN` | Token privado da Apify; habilita campanhas. |
 | `FIRECRAWL_API_KEY` | Chave privada da Firecrawl; habilita enriquecimento. |
+| `CRM_CREDENTIALS_KEY` | Opcional na Vercel: chave durável e exclusiva para cifrar as credenciais salvas pela interface; é obrigatória para salvá-las se a aplicação não usa Turso. |
 | `COOKIE_SECURE` | Defina `1` em HTTPS (na Vercel já é o padrão). |
 
 Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira as chaves no formulário do CRM, em `.env.example`, no repositório ou em prints. A interface estática abre mesmo sem banco; a API devolve 503 até as duas variáveis Turso estarem válidas. A tela de busca avança as campanhas em etapas enquanto permanece aberta; se você sair dela, volte para continuar. Cada campanha pode gerar cobranças na Apify e Firecrawl. Para uso comercial, valide uma busca pequena com as chaves reais e os custos dos provedores antes de aumentar o volume.
