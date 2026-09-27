@@ -4,7 +4,31 @@
 
 Encontrar empresas e profissionais locais que ainda não possuem site próprio ou loja virtual, reunir evidências públicas sobre a presença digital de cada negócio e organizar a venda consultiva de sites e lojas criadas pelo operador na Nuvemshop ou Yampi. Oferta inicial: implantação entre R$ 1.500 e R$ 3.000, com valor definido na proposta individual.
 
-**Estado atual do repositório:** especificação de produto. O aplicativo, as integrações e a persistência ainda precisam ser implementados. Nenhuma descoberta de empresas ou validação de contatos foi executada neste repositório.
+**Estado atual:** MVP executável com interface, banco SQLite, login de operador, campanhas Apify, enriquecimento Firecrawl, CRM, contatos individuais e exportação. As integrações externas foram testadas com respostas simuladas; a execução ao vivo exige as chaves reais e um teste de ponta a ponta no ambiente de operação. Ainda não há implantação pública nem integração direta com API4com, Nuvemshop, Yampi ou Tooplate.
+
+## Iniciar a aplicação
+
+Requisitos: Python 3.11+; nenhuma dependência de terceiros é necessária para executar o servidor.
+
+1. Configure as variáveis de `.env.example` no ambiente. Para uma primeira execução local, use um e-mail de operador e uma senha exclusiva de pelo menos 12 caracteres. O arquivo `.env` **não é carregado automaticamente**: exporte as variáveis no shell, no gerenciador de serviço ou na hospedagem.
+2. Execute `python server.py` e abra `http://127.0.0.1:8080` (ou o HOST/PORT definidos). O diretório `data/` será criado automaticamente para o SQLite.
+3. Entre com as credenciais configuradas; altere a senha em Configurações após o primeiro acesso. A senha inicial do ambiente só é usada ao criar o banco, não redefine uma senha já alterada.
+4. Defina `APIFY_TOKEN` e `FIRECRAWL_API_KEY` no servidor e reinicie para ativar a busca e o enriquecimento. Sem elas, cadastro manual, importação CSV, listas, CRM, mensagens e exportação funcionam normalmente.
+5. Para testar: `python -m unittest discover -s tests -v` e `node --check static/app.js` se tiver Node instalado.
+
+Exemplo local (troque os valores antes de usar):
+
+```bash
+export ADMIN_EMAIL='operador@empresa.com'
+export ADMIN_PASSWORD='uma-senha-exclusiva-com-mais-de-12-caracteres'
+python server.py
+```
+
+### Operação em hospedagem
+
+Use HTTPS em um proxy reverso, `COOKIE_SECURE=1`, banco SQLite em volume persistente e **um único processo** da aplicação (o worker interno já processa as campanhas). Faça backup regular do arquivo SQLite com a API de backup do SQLite, proteja o volume e defina política de retenção. Não publique o serviço diretamente sem TLS. Restrinja o acesso à equipe autorizada; o MVP suporta um operador inicial e sessões com senha/CSRF. A lógica de bloqueio por telefone impede reimportação do número; empresas sem telefone podem exigir remoção ou bloqueio adicional no futuro.
+
+As buscas da Apify e do Firecrawl são cobradas nas contas dos provedores. O limite de 1 a 100 empresas restringe a leitura e os resultados pretendidos; custos finais e limites efetivos do ator precisam ser validados na conta conectada. O app não envia mensagens automaticamente nem comprova que um número tem WhatsApp. A API4com é usada à parte para ligação.
 
 ## Fluxo
 
@@ -72,7 +96,7 @@ Referência funcional e de organização: https://leaddhunterv2.lovable.app/pain
 
 As páginas “Minha Licença” e “Créditos” são componentes comerciais da referência. Para uso interno, substituir por **Uso e custos** (execuções e créditos consumidos em Apify/Firecrawl) e **Configurações**; só haverá licença de usuário se surgir um produto de assinatura separado. No painel de referência, a busca usa nicho e localização e mostra resultados com dados como cidade, nota, telefone, site e ações; o CRM é um quadro com cartões arrastáveis. Esses padrões guiam os critérios de interface acima.
 
-**Navegação prioritária do MVP:** Painel → Procurar Clientes → Meus Leads → Listas → CRM → Mensagens → Histórico → Analytics → Configurações. Explorar Nichos e Exportações podem chegar na etapa seguinte, mantendo seus lugares previstos no menu. A UI deve mostrar estados de carregamento, vazio e falha; não exibir contagens fictícias.
+**Navegação prioritária do MVP:** Painel → Procurar Clientes → Meus Leads → Listas → CRM → Mensagens → Histórico → Analytics → Configurações. Explorar Nichos e Exportações podem chegar na etapa seguinte, mantendo seus lugares previstos no menu. A UI mostra estados de carregamento, vazio e falha; não exibe contagens fictícias. Foi adicionada a área Integrações com cards Apify, Firecrawl, importação CSV, FlowExtract opcional e Tooplate para prompts de sites institucionais.
 
 ## Telas do MVP
 
@@ -117,3 +141,7 @@ Modelo editável de primeira mensagem: “Olá! Vi a [nome da empresa] em [cidad
 - Cada lead tem sua própria mensagem editável; clicar no botão abre a conversa somente após revisão do operador. Nenhum envio em massa ocorre.
 - Telefone fixo ou número inválido não recebe selo de “WhatsApp verificado”. O CRM nunca promete verificar a existência de conta pelo formato do número.
 - Falhas da Apify ou Firecrawl aparecem na execução e não transformam ausência de evidência em certeza de que não há site.
+
+## Site institucional e Tooplate
+
+No detalhe do lead, selecione “Site institucional” como oferta e use **Preparar briefing do site** para gerar um texto editável com os dados conhecidos e campos que precisam ser confirmados com o negócio. Há links para o [gerador de prompt de portfólio](https://www.tooplate.com/tools/ai-portfolio-page-prompt-generator), enviado como referência, e para o [gerador de landing page](https://www.tooplate.com/tools/ai-landing-page-prompt-generator), mais adequado para muitos comércios locais. O Tooplate gera e permite copiar/exportar **prompts**; a criação, aprovação do conteúdo, hospedagem e publicação do site ainda são etapas executadas fora do CRM. Nuvemshop e Yampi permanecem opções de entrega de lojas de e-commerce. O card FlowExtract é uma referência opcional de ator externo e não executa nenhuma consulta paga automaticamente.
