@@ -1,6 +1,7 @@
 """CRM comercial mínimo, sem dependências externas. Python 3.11+."""
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import hmac
@@ -20,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("DATABASE_PATH", str(ROOT / "data" / "crm.sqlite3"))).resolve()
@@ -49,6 +52,39 @@ def turso_credentials():
     url = os.environ.get("TURSO_DATABASE_URL") or os.environ.get("crmecom_TURSO_DATABASE_URL")
     token = os.environ.get("TURSO_AUTH_TOKEN") or os.environ.get("crmecom_TURSO_AUTH_TOKEN")
     return url, token
+
+
+SERVICE_ENV = {"apify": "APIFY_TOKEN", "firecrawl": "FIRECRAWL_API_KEY"}
+
+
+def credential_cipher():
+    # The Turso token is server-only, persistent across deployments, and is never
+    # stored in the database. Local installs can supply a separate long random key.
+    material = os.environ.get("CRM_CREDENTIALS_KEY") or turso_credentials()[1]
+    if not material or len(material) < 32:
+        raise RuntimeError("Defina CRM_CREDENTIALS_KEY no servidor para salvar credenciais.")
+    return AESGCM(hashlib.sha256(b"crm-ecom-credentials-v1:" + material.encode()).digest())
+
+
+def service_key(service):
+    if service not in SERVICE_ENV: raise ValueError("Serviço inválido")
+    with db() as con:
+        row = con.execute("SELECT secret FROM integrations WHERE name=?", (service,)).fetchone()
+    if row:
+        try:
+            raw = base64.urlsafe_b64decode(row[0])
+            return credential_cipher().decrypt(raw[:12], raw[12:], service.encode()).decode()
+        except (InvalidTag, ValueError, RuntimeError):
+            return ""
+    return os.environ.get(SERVICE_ENV[service], "")
+
+
+def save_service_key(service, value):
+    if service not in SERVICE_ENV: raise ValueError("Serviço inválido")
+    nonce = secrets.token_bytes(12)
+    encrypted = base64.urlsafe_b64encode(nonce + credential_cipher().encrypt(nonce, value.encode(), service.encode())).decode()
+    with db() as con:
+        con.execute("INSERT INTO integrations(name,secret,updated_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET secret=excluded.secret,updated_at=excluded.updated_at", (service, encrypted, now()))
 
 
 def db():
@@ -88,6 +124,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS lead_lists(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS list_items(list_id INTEGER NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, PRIMARY KEY(list_id, lead_id));
         CREATE TABLE IF NOT EXISTS suppression(phone_digits TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS integrations(name TEXT PRIMARY KEY, secret TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
         if not os.environ.get("VERCEL") and not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
@@ -217,7 +254,7 @@ SHOP = ("nuvemshop.com.br", "lojavirtualnuvem.com.br", "yampi.com.br", "myshopif
 
 
 def enrich_lead(lead_id):
-    token = os.environ.get("FIRECRAWL_API_KEY", "")
+    token = service_key("firecrawl")
     if not token: return False
     with db() as con:
         lead = rowdict(con.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone())
@@ -261,7 +298,7 @@ def enrich_lead(lead_id):
 
 
 def run_campaign(c):
-    token = os.environ.get("APIFY_TOKEN", "")
+    token = service_key("apify")
     if not token: raise RuntimeError("APIFY_TOKEN ausente")
     with db() as con:
         con.execute("UPDATE campaigns SET status='running',error=NULL,updated_at=? WHERE id=?", (now(), c["id"]))
@@ -296,12 +333,12 @@ def run_campaign(c):
     enriched = 0
     failures = 0
     for lead_id in dict.fromkeys(lead_ids):
-        if os.environ.get("FIRECRAWL_API_KEY"):
+        if service_key("firecrawl"):
             try: enriched += bool(enrich_lead(lead_id))
             except (OSError, ValueError, KeyError, TimeoutError, urllib.error.HTTPError): failures += 1
         with db() as con: con.execute("UPDATE campaigns SET enriched=?,updated_at=? WHERE id=?", (enriched, now(), c["id"]))
     with db() as con:
-        con.execute("UPDATE campaigns SET status=?,error=?,updated_at=? WHERE id=?", ("partial" if failures or not os.environ.get("FIRECRAWL_API_KEY") else "done", f"{failures} pesquisas de enriquecimento falharam." if failures else ("Firecrawl não configurado; leads aguardam enriquecimento." if not os.environ.get("FIRECRAWL_API_KEY") else None), now(), c["id"]))
+        con.execute("UPDATE campaigns SET status=?,error=?,updated_at=? WHERE id=?", ("partial" if failures or not service_key("firecrawl") else "done", f"{failures} pesquisas de enriquecimento falharam." if failures else ("Firecrawl não configurado; leads aguardam enriquecimento." if not service_key("firecrawl") else None), now(), c["id"]))
 
 
 def worker():
@@ -321,7 +358,7 @@ def worker():
 
 def advance_campaign(campaign_id):
     """Advance one bounded step on request; serverless instances cannot host a worker."""
-    token = os.environ.get("APIFY_TOKEN", "")
+    token = service_key("apify")
     if not token: raise RuntimeError("APIFY_TOKEN ausente")
     with db() as con:
         c = rowdict(con.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone())
@@ -351,7 +388,7 @@ def advance_campaign(campaign_id):
                     saved += bool(created)
                 con.execute("UPDATE campaigns SET status='enriching',dataset_id=?,found=?,saved=?,updated_at=? WHERE id=?", (dataset_id, len(items), saved, now(), campaign_id))
         elif c["status"] == "enriching":
-            if not os.environ.get("FIRECRAWL_API_KEY"):
+            if not service_key("firecrawl"):
                 with db() as con: con.execute("UPDATE campaigns SET status='partial',error=?,updated_at=? WHERE id=?", ("Firecrawl não configurado; leads aguardam enriquecimento.", now(), campaign_id))
             else:
                 with db() as con:
@@ -431,7 +468,18 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get("Origin") != "https://" + host:
                     raise ApiError("Origem da requisição inválida", 403)
             if method != "GET" and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"]): raise ApiError("Sessão inválida; recarregue a página", 403)
-            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "apify": bool(os.environ.get("APIFY_TOKEN")), "firecrawl": bool(os.environ.get("FIRECRAWL_API_KEY")), "serverless": bool(os.environ.get("VERCEL"))})
+            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "serverless": bool(os.environ.get("VERCEL"))})
+            if method == "POST" and path == "/api/integrations":
+                body = self.json_body()
+                service, token = str(body.get("service", "")), str(body.get("token", "")).strip()
+                if service not in SERVICE_ENV or not 10 <= len(token) <= 4096: raise ApiError("Informe uma chave válida para Apify ou Firecrawl")
+                try: save_service_key(service, token)
+                except RuntimeError as exc: raise ApiError(str(exc), 503)
+                return self.send({"configured": True})
+            match = re.fullmatch(r"/api/integrations/(apify|firecrawl)", path)
+            if method == "DELETE" and match:
+                with db() as con: con.execute("DELETE FROM integrations WHERE name=?", (match[1],))
+                return self.send({"configured": bool(os.environ.get(SERVICE_ENV[match[1]]))})
             if method == "POST" and path == "/api/logout":
                 if user.get("sso"): raise ApiError("Encerre a sessão na Vercel", 404)
                 cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
@@ -609,7 +657,7 @@ class Handler(BaseHTTPRequestHandler):
                 con.execute("UPDATE leads SET blocked=1,updated_at=? WHERE id=?", (now(), lead_id))
                 con.execute("INSERT INTO activities(lead_id,kind,detail,created_at) VALUES(?,?,?,?)", (lead_id, "bloqueio", "Contato bloqueado para novas abordagens", now()))
             elif action == "enrich":
-                if not os.environ.get("FIRECRAWL_API_KEY"): raise ApiError("Configure FIRECRAWL_API_KEY no servidor")
+                if not service_key("firecrawl"): raise ApiError("Configure FIRECRAWL_API_KEY no servidor")
                 # Enrichment can take seconds; only this explicit single-lead action blocks a request.
             elif action == "activity":
                 kind = str(body.get("kind") or "nota")[:40]
@@ -627,7 +675,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self.json_body()
         niche, city, state = (str(body.get(k, "")).strip() for k in ("niche", "city", "state"))
         if not niche or not city or not state or any(len(x) > 100 for x in (niche, city, state)): raise ApiError("Informe segmento, cidade e UF")
-        if not os.environ.get("APIFY_TOKEN"): raise ApiError("Configure APIFY_TOKEN no servidor antes de iniciar a busca")
+        if not service_key("apify"): raise ApiError("Configure APIFY_TOKEN no servidor antes de iniciar a busca")
         try: limit = int(body.get("limit", 20))
         except (ValueError, TypeError): raise ApiError("Limite inválido")
         if not 1 <= limit <= 100: raise ApiError("Use um limite de 1 a 100 empresas")
