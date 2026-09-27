@@ -34,8 +34,8 @@ O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, 
 
 | Variável | Uso |
 | --- | --- |
-| `TURSO_DATABASE_URL` | URL do banco Turso associado ao projeto; obrigatória para API. |
-| `TURSO_AUTH_TOKEN` | Token privado de acesso ao banco; obrigatório. |
+| `TURSO_DATABASE_URL` ou `crmecom_TURSO_DATABASE_URL` | URL do banco Turso associado ao projeto; obrigatória para API. |
+| `TURSO_AUTH_TOKEN` ou `crmecom_TURSO_AUTH_TOKEN` | Token privado de acesso ao banco; obrigatório. |
 | `ADMIN_EMAIL` | Apenas execução local fora da Vercel: e-mail do operador. |
 | `ADMIN_PASSWORD` | Apenas execução local fora da Vercel: senha inicial com ao menos 12 caracteres. |
 | `APIFY_TOKEN` | Token privado da Apify; habilita campanhas. |
