@@ -66,6 +66,12 @@ def public_host(host):
                 host.lower().split(":")[0] == os.environ["CRM_PUBLIC_HOST"].lower().strip())
 
 
+def google_host(host):
+    hostname = host.lower().split(":")[0]
+    return bool(public_host(host) or (os.environ.get("SUPABASE_URL") and os.environ.get("VERCEL_ENV") == "preview" and
+                re.fullmatch(r"crm-ecom-[a-z0-9-]+-orange-even-projects\.vercel\.app", hostname)))
+
+
 def access_digest(code):
     material = os.environ.get("CRM_ACCESS_SECRET") or turso_credentials()[1] or os.environ.get("CRM_CREDENTIALS_KEY", "")
     if len(material) < 32: raise RuntimeError("Configure CRM_ACCESS_SECRET para o login por WhatsApp")
@@ -670,12 +676,12 @@ class Handler(BaseHTTPRequestHandler):
                 name, ctype = STATIC[path]
                 return self.send((ROOT / "static" / name).read_bytes(), content_type=ctype)
             if not path.startswith("/api/"): raise ApiError("Página não encontrada", 404)
-            if os.environ.get("VERCEL") and not (vercel_sso_only(self.headers.get("Host", "")) or public_host(self.headers.get("Host", ""))):
+            if os.environ.get("VERCEL") and not (vercel_sso_only(self.headers.get("Host", "")) or google_host(self.headers.get("Host", ""))):
                 raise ApiError("Acesso disponível apenas pelo endereço protegido da Vercel.", 403)
             if method == "GET" and path == "/api/access/status":
                 return self.send({"available": bool(not os.environ.get("VERCEL") or public_host(self.headers.get("Host", "")))})
             if method == "GET" and path == "/api/auth/config":
-                return self.send({"google": bool(os.environ.get("SUPABASE_URL")), "available": bool(not os.environ.get("VERCEL") or public_host(self.headers.get("Host", "")))})
+                return self.send({"google": bool(os.environ.get("SUPABASE_URL")), "available": bool(not os.environ.get("VERCEL") or google_host(self.headers.get("Host", "")))})
             if method == "GET" and path == "/api/auth/google/start":
                 return self.start_google_login()
             if method == "GET" and path == "/api/auth/google/callback":
@@ -821,7 +827,7 @@ class Handler(BaseHTTPRequestHandler):
         import supabase_auth
 
         host = self.headers.get("Host", "")
-        if os.environ.get("VERCEL") and not public_host(host):
+        if os.environ.get("VERCEL") and not google_host(host):
             raise ApiError("Use o domínio público do CRM", 403)
         scheme = "https" if os.environ.get("VERCEL") else "http"
         callback = f"{scheme}://{host}/api/auth/google/callback"
