@@ -1,5 +1,16 @@
 # CRM de prospecção para sites e lojas virtuais
 
+## Migração para Supabase e login Google (em preparação)
+
+O código suporta um esquema privado `crm` no PostgreSQL do Supabase e login Google por Supabase Auth com PKCE. **Não mude `SUPABASE_DB_URL` em Production até migrar e conferir todos os registros.** O deployment antigo Turso continua operando sem essas variáveis. Nenhuma variável de administrador ou chave de banco deve ser enviada por mensagem.
+
+1. Crie um projeto Supabase **exclusivo para este CRM**; não reutilize um projeto de outra aplicação. No painel Google Cloud, crie as credenciais OAuth e ative o provedor Google em Supabase Auth. Registre `https://crm-ecom-ten.vercel.app/api/auth/google/callback` nos Redirect URLs de Auth e configure o callback de Supabase nas credenciais Google.
+2. No projeto Supabase, copie a URL PostgreSQL **Session pooler** em **Connect** para `SUPABASE_DB_URL` (server-only), a URL HTTPS do projeto para `SUPABASE_URL` e sua **publishable key** para `SUPABASE_PUBLISHABLE_KEY`. Defina `CRM_ADMIN_GOOGLE_EMAIL` como o e-mail verificado na conta Google proprietária. Defina uma nova `CRM_CREDENTIALS_KEY` aleatória longa, estável, só no servidor.
+3. Para copiar dados do Turso antigo, execute `migrate_turso_to_supabase.py` em um ambiente privado com `OLD_TURSO_DATABASE_URL`, `OLD_TURSO_AUTH_TOKEN`, `SUPABASE_DB_URL` e `CRM_CREDENTIALS_KEY`. Se as chaves de API eram cifradas com uma chave diferente do token Turso, informe `OLD_CRM_CREDENTIALS_KEY`. O script exige destino vazio, transfere dados e recifra chaves em uma única transação; sessões e códigos antigos não são copiados. Confira as contagens e os leads antes de trocar o domínio.
+4. Configure no ambiente Production da Vercel `SUPABASE_DB_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `CRM_ADMIN_GOOGLE_EMAIL`, `CRM_CREDENTIALS_KEY` e `CRM_PUBLIC_HOST=crm-ecom-ten.vercel.app`. Faça deploy mantendo a proteção Vercel em **All Deployments**, entre com Google e verifique leads, chaves, papéis, importação e expiração. Depois mude a proteção para **Standard Protection** para que os colaboradores autorizados cheguem à tela de login Google.
+
+Na aba **Acessos**, o ADM cadastra os e-mails Google e o prazo de cada pessoa. Usuários sem cadastro ou com acesso vencido recebem bloqueio mesmo que tenham uma conta Google válida. Para colaboradores, **Configurações** mostra apenas o estado das ferramentas, sem chaves, e o servidor rejeita alterações de integrações ou acessos.
+
 ## Objetivo
 
 Encontrar empresas e profissionais locais que ainda não possuem site próprio ou loja virtual, reunir evidências públicas sobre a presença digital de cada negócio e organizar a venda consultiva de sites e lojas criadas pelo operador na Nuvemshop ou Yampi. Oferta inicial: implantação entre R$ 1.500 e R$ 3.000, com valor definido na proposta individual.
