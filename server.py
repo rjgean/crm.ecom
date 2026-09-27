@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import io
 import json
+import html
 import os
 import re
 import secrets
@@ -42,9 +43,11 @@ def now():
 
 
 def vercel_sso_only(host=""):
-    # Vercel Authentication protects this project's *.vercel.app deployments.
-    # Custom domains are excluded by its current project configuration.
-    return bool(os.environ.get("VERCEL") and os.environ.get("VERCEL_ENV") in ("preview", "production") and host.lower().split(":")[0].endswith(".vercel.app"))
+    # This exact production alias remains under All Deployments protection.
+    # Never infer admin privilege from arbitrary *.vercel.app domains.
+    protected = os.environ.get("CRM_PROTECTED_HOST", "crm-ecom-ten.vercel.app").lower().strip()
+    return bool(os.environ.get("VERCEL") and os.environ.get("VERCEL_ENV") in ("preview", "production") and
+                host.lower().split(":")[0] == protected and not public_host(host))
 
 
 def turso_credentials():
@@ -54,7 +57,33 @@ def turso_credentials():
     return url, token
 
 
-SERVICE_ENV = {"apify": "APIFY_TOKEN", "firecrawl": "FIRECRAWL_API_KEY", "groq": "GROQ_API_KEY"}
+SERVICE_ENV = {"apify": "APIFY_TOKEN", "firecrawl": "FIRECRAWL_API_KEY", "groq": "GROQ_API_KEY", "resend": "RESEND_API_KEY"}
+
+
+def public_host(host):
+    return bool(os.environ.get("VERCEL") and os.environ.get("CRM_PUBLIC_HOST") and
+                host.lower().split(":")[0] == os.environ["CRM_PUBLIC_HOST"].lower().strip())
+
+
+def access_digest(email, code):
+    material = os.environ.get("CRM_ACCESS_SECRET") or turso_credentials()[1] or os.environ.get("CRM_CREDENTIALS_KEY", "")
+    if len(material) < 32: raise RuntimeError("Configure CRM_ACCESS_SECRET para o login por e-mail")
+    return hmac.new(material.encode(), (email + ":" + code).encode(), hashlib.sha256).hexdigest()
+
+
+def access_identity(con, email):
+    row = con.execute("SELECT value FROM app_settings WHERE name='owner_email'").fetchone()
+    owner_email = (row[0] if row else os.environ.get("CRM_OWNER_EMAIL", "")).strip().lower()
+    if email and email == owner_email:
+        return {"role": "admin", "expires_at": None}
+    row = con.execute("SELECT expires_at FROM collaborators WHERE email=? AND revoked_at IS NULL AND expires_at>?", (email, now())).fetchone()
+    return {"role": "collaborator", "expires_at": row[0]} if row else None
+
+
+def email_sender():
+    with db() as con:
+        row = con.execute("SELECT value FROM app_settings WHERE name='email_from'").fetchone()
+    return row[0] if row else os.environ.get("CRM_EMAIL_FROM", "").strip()
 
 
 def credential_cipher():
@@ -125,6 +154,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS list_items(list_id INTEGER NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, PRIMARY KEY(list_id, lead_id));
         CREATE TABLE IF NOT EXISTS suppression(phone_digits TEXT PRIMARY KEY, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS integrations(name TEXT PRIMARY KEY, secret TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS app_settings(name TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS collaborators(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, revoked_at TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS access_challenges(email TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, requested_at TEXT NOT NULL, requests INTEGER NOT NULL DEFAULT 1, window_started TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS access_sessions(token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, state TEXT, list_id INTEGER REFERENCES lead_lists(id), total INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_items(batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, PRIMARY KEY(batch_id,lead_id));
         """)
@@ -560,12 +593,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def user(self):
         if vercel_sso_only(self.headers.get("Host", "")):
-            return {"email": "Acesso pela Vercel", "id": None, "csrf": "vercel-sso", "sso": True}
+            return {"email": "Acesso pela Vercel", "id": None, "csrf": "vercel-sso", "sso": True, "role": "admin"}
         cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
         token = cookies.get("crm_session", "")
         if not token: return None
         digest = hashlib.sha256(token.encode()).hexdigest()
-        with db() as con: return rowdict(con.execute("SELECT users.email,users.id,sessions.csrf FROM sessions JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
+        with db() as con:
+            access = rowdict(con.execute("SELECT email,csrf,expires_at FROM access_sessions WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
+            if access:
+                identity = access_identity(con, access["email"])
+                if identity: return {"email": access["email"], "id": None, "csrf": access["csrf"], "role": identity["role"], "sso": False}
+            old = rowdict(con.execute("SELECT users.email,users.id,sessions.csrf FROM sessions JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
+            if old and not os.environ.get("VERCEL"): return {**old, "role": "admin", "sso": False}
+        return None
 
     def json_body(self):
         size = int(self.headers.get("Content-Length", "0"))
@@ -585,8 +625,16 @@ class Handler(BaseHTTPRequestHandler):
                 name, ctype = STATIC[path]
                 return self.send((ROOT / "static" / name).read_bytes(), content_type=ctype)
             if not path.startswith("/api/"): raise ApiError("Página não encontrada", 404)
-            if os.environ.get("VERCEL") and not vercel_sso_only(self.headers.get("Host", "")):
+            if os.environ.get("VERCEL") and not (vercel_sso_only(self.headers.get("Host", "")) or public_host(self.headers.get("Host", ""))):
                 raise ApiError("Acesso disponível apenas pelo endereço protegido da Vercel.", 403)
+            if method == "GET" and path == "/api/access/status":
+                return self.send({"available": bool(service_key("resend") and email_sender() and (not os.environ.get("VERCEL") or public_host(self.headers.get("Host", ""))))})
+            if method == "POST" and path in ("/api/access/request", "/api/access/verify"):
+                host = self.headers.get("Host", "")
+                if os.environ.get("VERCEL") and not public_host(host): raise ApiError("Use o endereço público de colaboradores", 403)
+                if self.headers.get("Origin") != ("https://" if os.environ.get("VERCEL") else "http://") + host:
+                    raise ApiError("Origem da requisição inválida", 403)
+                return self.request_access() if path.endswith("request") else self.verify_access()
             if method == "POST" and path == "/api/login":
                 if os.environ.get("VERCEL"): raise ApiError("Use o acesso pela Vercel", 404)
                 return self.login()
@@ -597,24 +645,39 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get("Origin") != "https://" + host:
                     raise ApiError("Origem da requisição inválida", 403)
             if method != "GET" and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"]): raise ApiError("Sessão inválida; recarregue a página", 403)
-            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "serverless": bool(os.environ.get("VERCEL"))})
+            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "role": user["role"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "resend": bool(service_key("resend")), "serverless": bool(os.environ.get("VERCEL"))})
+            if path.startswith("/api/access/collaborators") and user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
+            if path == "/api/access/settings":
+                if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
+                if method == "GET": return self.access_settings()
+                if method == "POST": return self.save_access_settings()
+            if method == "GET" and path == "/api/access/collaborators": return self.list_collaborators()
+            if method == "POST" and path == "/api/access/collaborators": return self.add_collaborator()
+            match = re.fullmatch(r"/api/access/collaborators/(\d+)", path)
+            if match and method == "DELETE": return self.revoke_collaborator(int(match[1]))
             if method == "POST" and path == "/api/integrations":
+                if user["role"] != "admin": raise ApiError("Apenas administradores podem alterar credenciais", 403)
                 body = self.json_body()
                 service, token = str(body.get("service", "")), str(body.get("token", "")).strip()
                 if service not in SERVICE_ENV or not 10 <= len(token) <= 4096: raise ApiError("Informe uma chave válida para o serviço escolhido")
                 try: save_service_key(service, token)
                 except RuntimeError as exc: raise ApiError(str(exc), 503)
                 return self.send({"configured": True})
-            match = re.fullmatch(r"/api/integrations/(apify|firecrawl|groq)", path)
+            match = re.fullmatch(r"/api/integrations/(apify|firecrawl|groq|resend)", path)
             if method == "DELETE" and match:
+                if user["role"] != "admin": raise ApiError("Apenas administradores podem alterar credenciais", 403)
                 with db() as con: con.execute("DELETE FROM integrations WHERE name=?", (match[1],))
                 return self.send({"configured": bool(os.environ.get(SERVICE_ENV[match[1]]))})
             if method == "POST" and path == "/api/logout":
                 if user.get("sso"): raise ApiError("Encerre a sessão na Vercel", 404)
                 cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
-                with db() as con: con.execute("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(cookies.get("crm_session", "").encode()).hexdigest(),))
+                with db() as con:
+                    digest = hashlib.sha256(cookies.get("crm_session", "").encode()).hexdigest()
+                    con.execute("DELETE FROM sessions WHERE token_hash=?", (digest,))
+                    con.execute("DELETE FROM access_sessions WHERE token_hash=?", (digest,))
                 return self.send({"ok": True}, headers={"Set-Cookie": "crm_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
             if method == "POST" and path == "/api/change-password":
+                if user["role"] != "admin" or not user["id"]: raise ApiError("Senha não disponível para este acesso", 403)
                 if user.get("sso"): raise ApiError("A senha é gerenciada pela Vercel", 404)
                 return self.change_password(user)
             if method == "GET" and path == "/api/dashboard": return self.dashboard()
@@ -684,6 +747,111 @@ class Handler(BaseHTTPRequestHandler):
             con.execute("INSERT INTO sessions(token_hash,user_id,csrf,expires_at) VALUES(?,?,?,?)", (hashlib.sha256(token.encode()).hexdigest(), user["id"], csrf, (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(timespec="seconds")))
         secure = "; Secure" if COOKIE_SECURE else ""
         return self.send({"email": email, "csrf": csrf}, headers={"Set-Cookie": f"crm_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800{secure}"})
+
+    def list_collaborators(self):
+        with db() as con:
+            return self.send([dict(row) for row in con.execute("SELECT id,email,expires_at,revoked_at,created_at FROM collaborators ORDER BY id DESC LIMIT 250")])
+
+    def access_settings(self):
+        with db() as con:
+            owner = con.execute("SELECT value FROM app_settings WHERE name='owner_email'").fetchone()
+        return self.send({"owner_email": owner[0] if owner else os.environ.get("CRM_OWNER_EMAIL", ""), "email_from": email_sender(), "email_ready": bool(service_key("resend"))})
+
+    def save_access_settings(self):
+        body = self.json_body()
+        owner, sender = (str(body.get(key, "")).strip().lower() for key in ("owner_email", "email_from"))
+        valid = r"[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}"
+        if not re.fullmatch(valid, owner) or not re.fullmatch(valid, sender): raise ApiError("Informe um e-mail de administrador e um remetente válidos")
+        with db() as con:
+            previous = con.execute("SELECT value FROM app_settings WHERE name='owner_email'").fetchone()
+            con.execute("INSERT INTO app_settings(name,value) VALUES('owner_email',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (owner,))
+            con.execute("INSERT INTO app_settings(name,value) VALUES('email_from',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (sender,))
+            if previous and previous[0] != owner:
+                con.execute("DELETE FROM access_sessions WHERE email=?", (previous[0],))
+                con.execute("DELETE FROM access_challenges WHERE email=?", (previous[0],))
+        return self.send({"ok": True})
+
+    def add_collaborator(self):
+        body = self.json_body()
+        email = str(body.get("email", "")).strip().lower()
+        if not re.fullmatch(r"[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}", email): raise ApiError("Informe um e-mail válido")
+        try: expiry = datetime.fromisoformat(str(body.get("expires_at", "")).replace("Z", "+00:00"))
+        except ValueError: raise ApiError("Defina a data e hora de expiração")
+        if not expiry.tzinfo: raise ApiError("A expiração precisa incluir o fuso horário")
+        expiry = expiry.astimezone(timezone.utc)
+        if not timedelta(minutes=5) <= expiry - datetime.now(timezone.utc) <= timedelta(days=365):
+            raise ApiError("Defina validade entre 5 minutos e 365 dias")
+        with db() as con:
+            owner = con.execute("SELECT value FROM app_settings WHERE name='owner_email'").fetchone()
+            if email == (owner[0] if owner else os.environ.get("CRM_OWNER_EMAIL", "")).strip().lower():
+                raise ApiError("O e-mail do administrador já possui acesso")
+            con.execute("INSERT INTO collaborators(email,expires_at,revoked_at,created_at) VALUES(?,?,NULL,?) ON CONFLICT(email) DO UPDATE SET expires_at=excluded.expires_at,revoked_at=NULL", (email, expiry.isoformat(timespec="seconds"), now()))
+        return self.send({"ok": True}, 201)
+
+    def revoke_collaborator(self, identifier):
+        with db() as con:
+            row = con.execute("SELECT email FROM collaborators WHERE id=?", (identifier,)).fetchone()
+            if not row: raise ApiError("Acesso não encontrado", 404)
+            con.execute("UPDATE collaborators SET revoked_at=? WHERE id=?", (now(), identifier))
+            con.execute("DELETE FROM access_sessions WHERE email=?", (row[0],))
+            con.execute("DELETE FROM access_challenges WHERE email=?", (row[0],))
+        return self.send({"ok": True})
+
+    def request_access(self):
+        body = self.json_body()
+        email = str(body.get("email", "")).strip().lower()[:254]
+        generic = {"ok": True, "message": "Se o e-mail estiver autorizado, você receberá um ID de acesso em instantes."}
+        if not re.fullmatch(r"[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}", email): return self.send(generic)
+        token = service_key("resend")
+        sender = email_sender()
+        if not token or not sender: raise ApiError("Envio de e-mail ainda não configurado pelo administrador", 503)
+        current = datetime.now(timezone.utc)
+        with db() as con:
+            identity = access_identity(con, email)
+            challenge = rowdict(con.execute("SELECT * FROM access_challenges WHERE email=?", (email,)).fetchone())
+        if not identity: return self.send(generic)
+        if challenge:
+            requested = datetime.fromisoformat(challenge["requested_at"])
+            window = datetime.fromisoformat(challenge["window_started"])
+            if (current - requested).total_seconds() < 90 or (current - window).total_seconds() < 3600 and challenge["requests"] >= 5:
+                return self.send(generic)
+        code = f"{secrets.randbelow(100_000_000):08d}"
+        expiry = (current + timedelta(minutes=10)).isoformat(timespec="seconds")
+        try:
+            request_json("https://api.resend.com/emails", token, {
+                "from": sender, "to": [email], "subject": "Seu ID de acesso ao CRM ECOM",
+                "html": "<p>Seu ID de acesso é <strong>" + html.escape(code) + "</strong>.</p><p>Válido por 10 minutos. Não compartilhe este código.</p>",
+            }, timeout=12)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+            raise ApiError("Não foi possível enviar o ID por e-mail. Confira a configuração do remetente.", 502)
+        count = challenge["requests"] + 1 if challenge and (current - datetime.fromisoformat(challenge["window_started"])).total_seconds() < 3600 else 1
+        window_start = challenge["window_started"] if count > 1 else now()
+        with db() as con:
+            con.execute("INSERT INTO access_challenges(email,code_hash,expires_at,attempts,requested_at,requests,window_started) VALUES(?,?,?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,requested_at=excluded.requested_at,requests=excluded.requests,window_started=excluded.window_started", (email, access_digest(email, code), expiry, 0, now(), count, window_start))
+        return self.send(generic)
+
+    def verify_access(self):
+        body = self.json_body()
+        email = str(body.get("email", "")).strip().lower()[:254]
+        code = str(body.get("code", "")).strip()
+        if not re.fullmatch(r"\d{8}", code): raise ApiError("ID de acesso inválido ou expirado", 401)
+        valid = False
+        with db() as con:
+            challenge = rowdict(con.execute("SELECT code_hash,attempts FROM access_challenges WHERE email=? AND expires_at>?", (email, now())).fetchone())
+            identity = access_identity(con, email)
+            if not challenge or not identity or challenge["attempts"] >= 5: raise ApiError("ID de acesso inválido ou expirado", 401)
+            con.execute("UPDATE access_challenges SET attempts=attempts+1 WHERE email=?", (email,))
+            valid = hmac.compare_digest(challenge["code_hash"], access_digest(email, code))
+            if valid:
+                con.execute("DELETE FROM access_challenges WHERE email=?", (email,))
+                session_token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+                expiry = datetime.now(timezone.utc) + timedelta(days=7)
+                if identity["expires_at"]: expiry = min(expiry, datetime.fromisoformat(identity["expires_at"]))
+                con.execute("INSERT INTO access_sessions(token_hash,email,csrf,expires_at) VALUES(?,?,?,?)", (hashlib.sha256(session_token.encode()).hexdigest(), email, csrf, expiry.isoformat(timespec="seconds")))
+        if not valid: raise ApiError("ID de acesso inválido ou expirado", 401)
+        secure = "; Secure" if COOKIE_SECURE else ""
+        age = max(0, int((expiry - datetime.now(timezone.utc)).total_seconds()))
+        return self.send({"ok": True}, headers={"Set-Cookie": f"crm_session={session_token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{secure}"})
 
     def change_password(self, user):
         body = self.json_body()
