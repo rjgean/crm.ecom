@@ -4,7 +4,7 @@
 
 Encontrar empresas e profissionais locais que ainda não possuem site próprio ou loja virtual, reunir evidências públicas sobre a presença digital de cada negócio e organizar a venda consultiva de sites e lojas criadas pelo operador na Nuvemshop ou Yampi. Oferta inicial: implantação entre R$ 1.500 e R$ 3.000, com valor definido na proposta individual.
 
-**Estado atual:** MVP executável com interface, banco SQLite, login de operador, campanhas Apify, enriquecimento Firecrawl, CRM, contatos individuais e exportação. As integrações externas foram testadas com respostas simuladas; a execução ao vivo exige as chaves reais e um teste de ponta a ponta no ambiente de operação. Ainda não há implantação pública nem integração direta com API4com, Nuvemshop, Yampi ou Tooplate.
+**Estado atual:** MVP executável com interface, banco SQLite local ou Turso remoto, login de operador, campanhas Apify, enriquecimento Firecrawl, CRM, contatos individuais e exportação. As integrações externas foram testadas com respostas simuladas; a execução ao vivo exige as chaves reais e um teste de ponta a ponta no ambiente de operação. Ainda não há implantação pública nem integração direta com API4com, Nuvemshop, Yampi ou Tooplate.
 
 ## Iniciar a aplicação
 
@@ -27,6 +27,22 @@ python server.py
 ### Operação em hospedagem
 
 Use HTTPS em um proxy reverso, `COOKIE_SECURE=1`, banco SQLite em volume persistente e **um único processo** da aplicação (o worker interno já processa as campanhas). Faça backup regular do arquivo SQLite com a API de backup do SQLite, proteja o volume e defina política de retenção. Não publique o serviço diretamente sem TLS. Restrinja o acesso à equipe autorizada; o MVP suporta um operador inicial e sessões com senha/CSRF. A lógica de bloqueio por telefone impede reimportação do número; empresas sem telefone podem exigir remoção ou bloqueio adicional no futuro.
+
+### Publicar na Vercel
+
+O projeto inclui `app.py` (entrada WSGI), `vercel.json`, `pyproject.toml` e `requirements.txt`. Importe o repositório na Vercel com a raiz do projeto como diretório raiz, sem configurar comando de build. Conecte um banco **Turso Cloud persistente** (a integração no marketplace pode fornecer as duas variáveis `TURSO_*`). Em **Project → Settings → Environment Variables**, configure para Production e Preview:
+
+| Variável | Uso |
+| --- | --- |
+| `TURSO_DATABASE_URL` | URL do banco Turso associado ao projeto; obrigatória para API. |
+| `TURSO_AUTH_TOKEN` | Token privado de acesso ao banco; obrigatório. |
+| `ADMIN_EMAIL` | E-mail de login do primeiro operador; obrigatório antes de inicializar o banco. |
+| `ADMIN_PASSWORD` | Senha inicial exclusiva de pelo menos 12 caracteres; obrigatória no primeiro acesso. |
+| `APIFY_TOKEN` | Token privado da Apify; habilita campanhas. |
+| `FIRECRAWL_API_KEY` | Chave privada da Firecrawl; habilita enriquecimento. |
+| `COOKIE_SECURE` | Defina `1` em HTTPS (na Vercel já é o padrão). |
+
+Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira as chaves no formulário do CRM, em `.env.example`, no repositório ou em prints. A interface estática abre mesmo sem banco; a API devolve 503 até as duas variáveis Turso estarem válidas. A tela de busca avança as campanhas em etapas enquanto permanece aberta; se você sair dela, volte para continuar. Cada campanha pode gerar cobranças na Apify e Firecrawl. Para uso comercial, valide uma busca pequena com as chaves reais e os custos dos provedores antes de aumentar o volume. O limite de 60 segundos por chamada está em `vercel.json`.
 
 As buscas da Apify e do Firecrawl são cobradas nas contas dos provedores. O limite de 1 a 100 empresas restringe a leitura e os resultados pretendidos; custos finais e limites efetivos do ator precisam ser validados na conta conectada. O app não envia mensagens automaticamente nem comprova que um número tem WhatsApp. A API4com é usada à parte para ligação.
 
