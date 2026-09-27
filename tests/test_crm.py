@@ -1,6 +1,7 @@
 import http.cookiejar
 import json
 import os
+import re
 import tempfile
 import threading
 import unittest
@@ -38,6 +39,7 @@ class CRMTests(unittest.TestCase):
 
     def request(self, method, path, body=None, with_csrf=True):
         headers = {"Content-Type": "application/json"}
+        headers["Origin"] = self.base
         if self.csrf and with_csrf:
             headers["X-CSRF-Token"] = self.csrf
         req = urllib.request.Request(self.base + "/api" + path, data=json.dumps(body).encode() if body is not None else None, headers=headers, method=method)
@@ -77,6 +79,44 @@ class CRMTests(unittest.TestCase):
                 status, message = self.request("POST", path, {})
                 self.assertEqual(status, 429)
                 self.assertIn("Limite gratuito", message["error"])
+
+    def test_collaborator_email_code_expiry_and_admin_permissions(self):
+        self.login()
+        email = "teammate-access@example.test"
+        expiry = (server.datetime.now(server.timezone.utc) + server.timedelta(days=2)).isoformat()
+        self.assertEqual(self.request("POST", "/access/settings", {"owner_email": "owner-access@example.test", "email_from": "login@example.test"})[0], 200)
+        self.assertEqual(self.request("POST", "/access/collaborators", {"email": email, "expires_at": expiry})[0], 201)
+        with patch.dict(os.environ, {"RESEND_API_KEY": "fake-resend-token", "CRM_ACCESS_SECRET": "a-very-long-local-key-used-for-access-testing"}):
+            sent = []
+            def delivery(url, key, payload, timeout):
+                sent.append((url, payload))
+                return {"id": "email-test"}
+            with patch.object(server, "request_json", side_effect=delivery):
+                status, response = self.request("POST", "/access/request", {"email": email})
+                self.assertEqual(status, 200)
+                self.assertNotIn("code", response)
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(sent[0][0], "https://api.resend.com/emails")
+                code = re.search(r"<strong>(\d{8})</strong>", sent[0][1]["html"])[1]
+                self.assertEqual(self.request("POST", "/access/request", {"email": "unknown-user@example.test"})[0], 200)
+                self.assertEqual(len(sent), 1)
+            self.assertEqual(self.request("POST", "/access/verify", {"email": email, "code": "99999999"})[0], 401)
+            with server.db() as con:
+                self.assertEqual(con.execute("SELECT attempts FROM access_challenges WHERE email=?", (email,)).fetchone()[0], 1)
+            self.assertEqual(self.request("POST", "/access/verify", {"email": email, "code": code})[0], 200)
+            status, me = self.request("GET", "/me")
+            self.assertEqual((status, me["role"]), (200, "collaborator"))
+            self.csrf = me["csrf"]
+            self.assertEqual(self.request("POST", "/integrations", {"service": "groq", "token": "not-allowed-secret"})[0], 403)
+            self.assertEqual(self.request("GET", "/access/collaborators")[0], 403)
+            self.assertEqual(self.request("GET", "/leads")[0], 200)
+            with server.db() as con:
+                con.execute("UPDATE collaborators SET expires_at=? WHERE email=?", (server.now(), email))
+            self.assertEqual(self.request("GET", "/me")[0], 401)
+            self.login()
+            with server.db() as con:
+                identifier = con.execute("SELECT id FROM collaborators WHERE email=?", (email,)).fetchone()[0]
+            self.assertEqual(self.request("DELETE", f"/access/collaborators/{identifier}")[0], 200)
 
     def test_integration_credentials_are_encrypted_and_never_returned(self):
         self.login()
