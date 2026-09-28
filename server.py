@@ -509,15 +509,24 @@ def advance_campaign(campaign_id):
             if not service_key("firecrawl"):
                 with db() as con: con.execute("UPDATE campaigns SET status='partial',error=?,updated_at=? WHERE id=?", ("Firecrawl não configurado; leads aguardam enriquecimento.", now(), campaign_id))
             else:
+                # Claim exactly one enrichment slot before calling Firecrawl. This makes
+                # duplicate browser polls harmless instead of processing the same lead
+                # several times and skipping later leads.
                 with db() as con:
                     lead = con.execute("SELECT id FROM leads WHERE campaign_id=? ORDER BY id LIMIT 1 OFFSET ?", (campaign_id, c["enriched"])).fetchone()
-                if lead:
+                    if lead:
+                        claimed = con.execute(
+                            "UPDATE campaigns SET enriched=enriched+1,updated_at=? WHERE id=? AND status='enriching' AND enriched=?",
+                            (now(), campaign_id, c["enriched"]),
+                        ).rowcount
+                    else:
+                        claimed = False
+                if lead and claimed:
                     try: enrich_lead(lead[0])
                     except Exception as exc:
                         with db() as con: con.execute("UPDATE campaigns SET error=? WHERE id=?", (error_text(exc), campaign_id))
-                    with db() as con: con.execute("UPDATE campaigns SET enriched=enriched+1,updated_at=? WHERE id=?", (now(), campaign_id))
-                else:
-                    with db() as con: con.execute("UPDATE campaigns SET status=?,updated_at=? WHERE id=?", ("partial" if c["error"] else "done", now(), campaign_id))
+                elif not lead:
+                    with db() as con: con.execute("UPDATE campaigns SET status=?,updated_at=? WHERE id=? AND status='enriching'", ("partial" if c["error"] else "done", now(), campaign_id))
     except Exception as exc:
         with db() as con: con.execute("UPDATE campaigns SET status='failed',error=?,updated_at=? WHERE id=?", (error_text(exc), now(), campaign_id))
     with db() as con: return rowdict(con.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone())
