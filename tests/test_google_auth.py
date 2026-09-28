@@ -1,96 +1,85 @@
-"""Roles and PKCE login must never grant admin to an unlisted Google account."""
-import hashlib
+"""The internal CRM uses one password, including on Vercel deployments."""
+import os
 import io
 import json
-import os
 import tempfile
 import unittest
-import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import server
-import supabase_auth
 
 
-class GoogleAccessTests(unittest.TestCase):
+class PasswordAccessTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.database = patch.object(server, "DB_PATH", Path(self.temp.name) / "crm.sqlite3")
+        self.secure_cookie = patch.object(server, "COOKIE_SECURE", True)
         self.environment = patch.dict(os.environ, {
             "VERCEL": "1", "VERCEL_ENV": "production", "CRM_PUBLIC_HOST": "crm-ecom-ten.vercel.app",
-            "SUPABASE_URL": "https://example.supabase.co", "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test",
-            "CRM_ADMIN_GOOGLE_EMAIL": "owner@example.com",
-        })
+            "ADMIN_EMAIL": "gean@example.com", "ADMIN_PASSWORD": "InitialPassword123456!",
+            "SUPABASE_URL": "https://example.supabase.co",
+        }, clear=True)
         self.database.start()
+        self.secure_cookie.start()
         self.environment.start()
         server.init_db()
+        self.cookie = ""
 
     def tearDown(self):
         self.environment.stop()
+        self.secure_cookie.stop()
         self.database.stop()
         self.temp.cleanup()
 
-    def request(self, method, path, *, cookie="", csrf="", body=None):
+    def request(self, path, *, method="GET", payload=None, origin="https://crm-ecom-ten.vercel.app", csrf=""):
         handler = object.__new__(server.Handler)
         handler.path = "/api" + path
-        handler.headers = {
-            "Host": "crm-ecom-ten.vercel.app", "Origin": "https://crm-ecom-ten.vercel.app",
-            "Cookie": cookie, "X-CSRF-Token": csrf,
-        }
+        body = json.dumps(payload or {}).encode()
+        handler.headers = {"Host": "crm-ecom-ten.vercel.app", "Origin": origin, "Cookie": self.cookie,
+                           "Content-Length": str(len(body)), "X-CSRF-Token": csrf}
         handler.client_address = ("127.0.0.1", 0)
-        handler.rfile = io.BytesIO(json.dumps(body or {}).encode())
-        handler.headers["Content-Length"] = str(handler.rfile.getbuffer().nbytes)
+        handler.rfile = io.BytesIO(body)
         handler.wfile = io.BytesIO()
         handler.send_response = lambda status: setattr(handler, "status", status)
-        handler.sent_headers = []
-        handler.send_header = lambda name, value: handler.sent_headers.append((name, value))
+        sent = []
+        handler.send_header = lambda name, value: sent.append((name, value))
         handler.end_headers = lambda: None
         handler.route(method)
-        payload = handler.wfile.getvalue()
-        return handler.status, json.loads(payload) if payload else None, dict(handler.sent_headers), handler.sent_headers
+        headers = dict(sent)
+        if "Set-Cookie" in headers: self.cookie = headers["Set-Cookie"].split(";", 1)[0]
+        raw = handler.wfile.getvalue()
+        return SimpleNamespace(status_code=handler.status, json=json.loads(raw) if raw else {}, headers=headers)
 
-    def session(self, email):
-        token, csrf = email + "-session", email + "-csrf"
-        with server.db() as con:
-            con.execute("INSERT INTO google_sessions(token_hash,email,csrf,expires_at) VALUES(?,?,?,?)", (hashlib.sha256(token.encode()).hexdigest(), email, csrf, (server.datetime.now(server.timezone.utc) + server.timedelta(days=1)).isoformat()))
-        return "crm_session=" + token, csrf
+    def test_password_login_and_legacy_access_disabled(self):
+        self.assertEqual(self.request("/me").status_code, 401)
+        self.assertEqual(self.request("/auth/config").json, {"password": True, "available": True})
+        self.assertEqual(self.request("/login", method="POST", payload={"email": "gean@example.com", "password": "bad"}).status_code, 401)
+        self.assertEqual(self.request("/login", method="POST", payload={"email": "gean@example.com", "password": "InitialPassword123456!"}, origin="https://other.example").status_code, 403)
+        logged_in = self.request("/login", method="POST", payload={"email": "gean@example.com", "password": "InitialPassword123456!"})
+        self.assertEqual(logged_in.status_code, 200)
+        self.assertIn("HttpOnly", logged_in.headers["Set-Cookie"])
+        self.assertIn("Secure", logged_in.headers["Set-Cookie"])
+        me = self.request("/me")
+        self.assertEqual((me.status_code, me.json["role"], me.json["email"]), (200, "admin", "gean@example.com"))
+        self.assertEqual(self.request("/access/settings").status_code, 404)
+        self.assertEqual(self.request("/auth/google/start").status_code, 404)
+        self.assertEqual(self.request("/dashboard").status_code, 200)
+        self.assertEqual(self.request("/logout", method="POST").status_code, 403)
+        self.assertEqual(self.request("/logout", method="POST", csrf=me.json["csrf"]).status_code, 200)
+        self.assertEqual(self.request("/me").status_code, 401)
 
-    def test_owner_and_authorized_collaborator_have_distinct_roles(self):
-        admin_cookie, admin_csrf = self.session("owner@example.com")
-        other_cookie, other_csrf = self.session("collaborator@example.com")
-        self.assertEqual(self.request("GET", "/me", cookie=admin_cookie)[1]["role"], "admin")
-        self.assertEqual(self.request("GET", "/me", cookie=other_cookie)[0], 401)
-        self.assertEqual(self.request("POST", "/access/google-users", cookie=admin_cookie, csrf="wrong", body={"email": "collaborator@example.com"})[0], 403)
-        expiry = (server.datetime.now(server.timezone.utc) + server.timedelta(days=2)).isoformat()
-        self.assertEqual(self.request("POST", "/access/google-users", cookie=admin_cookie, csrf=admin_csrf, body={"email": "collaborator@example.com", "expires_at": expiry})[0], 201)
-        self.assertEqual(self.request("GET", "/me", cookie=other_cookie)[1]["role"], "collaborator")
-        self.assertEqual(self.request("POST", "/access/google-users", cookie=other_cookie, csrf=other_csrf, body={"email": "another@example.com", "expires_at": expiry})[0], 403)
-        self.assertEqual(self.request("GET", "/access/google-users", cookie=other_cookie)[0], 403)
-        self.assertEqual(self.request("POST", "/integrations", cookie=other_cookie, csrf=other_csrf, body={"service": "apify", "token": "untrusted-token"})[0], 403)
-        users = self.request("GET", "/access/google-users", cookie=admin_cookie)[1]
-        self.assertEqual(self.request("DELETE", "/access/google-users/" + str(users[0]["id"]), cookie=admin_cookie, csrf=admin_csrf)[0], 200)
-        self.assertEqual(self.request("GET", "/me", cookie=other_cookie)[0], 401)
-
-    def test_oauth_state_is_single_use_and_owner_only(self):
-        status, _, headers, pairs = self.request("GET", "/auth/google/start")
-        self.assertEqual(status, 303)
-        self.assertIn("code_challenge_method=s256", headers["Location"])
-        cookie = next(value.split(";", 1)[0] for name, value in pairs if name == "Set-Cookie" and value.startswith("crm_oauth="))
-        with patch.object(supabase_auth, "exchange", return_value="owner@example.com") as exchange:
-            status, _, _, sent = self.request("GET", "/auth/google/callback?code=google-auth-code", cookie=cookie)
-            self.assertEqual(status, 303)
-            self.assertTrue(any(value.startswith("crm_session=") for name, value in sent if name == "Set-Cookie"))
-            self.assertEqual(exchange.call_count, 1)
-            self.assertEqual(self.request("GET", "/auth/google/callback?code=google-auth-code", cookie=cookie)[2]["Location"], "/?auth_error=1")
-
-    def test_unknown_google_user_cannot_create_session(self):
-        _, _, headers, pairs = self.request("GET", "/auth/google/start")
-        cookie = next(value.split(";", 1)[0] for name, value in pairs if name == "Set-Cookie" and value.startswith("crm_oauth="))
-        with patch.object(supabase_auth, "exchange", return_value="stranger@example.com"):
-            status, _, headers, sent = self.request("GET", "/auth/google/callback?code=google-auth-code", cookie=cookie)
-        self.assertEqual((status, headers["Location"]), (303, "/?auth_error=2"))
-        self.assertFalse(any(value.startswith("crm_session=") for name, value in sent if name == "Set-Cookie"))
+    def test_password_rotation_in_hosting_settings_revokes_sessions(self):
+        login = self.request("/login", method="POST", payload={"email": "gean@example.com", "password": "InitialPassword123456!"})
+        self.assertEqual(login.status_code, 200)
+        with patch.dict(os.environ, {"ADMIN_PASSWORD": "RotatedPassword654321!"}):
+            server.init_db()
+            self.assertEqual(self.request("/me").status_code, 401)
+            self.assertEqual(self.request("/login", method="POST", payload={"email": "gean@example.com", "password": "InitialPassword123456!"}).status_code, 401)
+            self.assertEqual(self.request("/login", method="POST", payload={"email": "gean@example.com", "password": "RotatedPassword654321!"}).status_code, 200)
+            server.init_db()
+            self.assertEqual(self.request("/me").status_code, 200)
 
 
 if __name__ == "__main__":

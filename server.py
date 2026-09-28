@@ -42,13 +42,8 @@ def now():
 
 
 def vercel_sso_only(host=""):
-    # This exact production alias remains under All Deployments protection.
-    # Never infer admin privilege from arbitrary *.vercel.app domains.
-    protected = os.environ.get("CRM_PROTECTED_HOST", "crm-ecom-ten.vercel.app").lower().strip()
-    hostname = host.lower().split(":")[0]
-    return bool(os.environ.get("VERCEL") and not os.environ.get("SUPABASE_URL") and not public_host(host) and
-                ((os.environ.get("VERCEL_ENV") == "preview" and (hostname == protected or bool(re.fullmatch(r"crm-ecom-[a-z0-9-]+-orange-even-projects\.vercel\.app", hostname)))) or
-                 (os.environ.get("VERCEL_ENV") == "production" and hostname == protected)))
+    # Vercel deployment protection is not an application session.
+    return False
 
 
 def turso_credentials():
@@ -62,14 +57,34 @@ SERVICE_ENV = {"apify": "APIFY_TOKEN", "firecrawl": "FIRECRAWL_API_KEY", "groq":
 
 
 def public_host(host):
-    return bool(os.environ.get("VERCEL") and os.environ.get("CRM_PUBLIC_HOST") and
-                host.lower().split(":")[0] == os.environ["CRM_PUBLIC_HOST"].lower().strip())
+    return bool(os.environ.get("VERCEL") and
+                host.lower().split(":")[0] == os.environ.get("CRM_PUBLIC_HOST", "crm-ecom-ten.vercel.app").lower().strip())
 
 
 def google_host(host):
     hostname = host.lower().split(":")[0]
-    return bool(public_host(host) or (os.environ.get("SUPABASE_URL") and os.environ.get("VERCEL_ENV") == "preview" and
+    return bool(public_host(host) or (os.environ.get("VERCEL_ENV") == "preview" and
                 re.fullmatch(r"crm-ecom-[a-z0-9-]+-orange-even-projects\.vercel\.app", hostname)))
+
+
+def bootstrap_operator(con):
+    """Create the operator and allow an explicit password rotation in hosting settings."""
+    operator = con.execute("SELECT id,email FROM users ORDER BY id LIMIT 1").fetchone()
+    email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+    password = os.environ.get("ADMIN_PASSWORD", "")
+    if operator:
+        seed = con.execute("SELECT value FROM app_settings WHERE name='admin_env_password_hash'").fetchone()
+        if seed and len(password) >= 12 and not verify_password(password, seed[0]):
+            if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                raise RuntimeError("Configure ADMIN_EMAIL para redefinir a senha.")
+            con.execute("UPDATE users SET email=?,password_hash=? WHERE id=?", (email, hash_password(password), operator[0]))
+            con.execute("UPDATE app_settings SET value=? WHERE name='admin_env_password_hash'", (hash_password(password),))
+            con.execute("DELETE FROM sessions")
+        return
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) or len(password) < 12:
+        raise RuntimeError("Configure ADMIN_EMAIL e ADMIN_PASSWORD (mínimo 12 caracteres) na hospedagem.")
+    con.execute("INSERT OR IGNORE INTO users(email,password_hash) VALUES(?,?)", (email, hash_password(password)))
+    con.execute("INSERT OR IGNORE INTO app_settings(name,value) VALUES('admin_env_password_hash',?)", (hash_password(password),))
 
 
 def access_digest(code):
@@ -146,12 +161,7 @@ def init_db():
     if os.environ.get("SUPABASE_DB_URL"):
         with db() as con:
             con.executescript((ROOT / "schema" / "supabase.sql").read_text())
-            if not os.environ.get("VERCEL") and not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
-                email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
-                password = os.environ.get("ADMIN_PASSWORD", "")
-                if not email or len(password) < 12 or "@" not in email:
-                    raise RuntimeError("Defina ADMIN_EMAIL e ADMIN_PASSWORD para iniciar localmente")
-                con.execute("INSERT INTO users(email,password_hash) VALUES(?,?) ON CONFLICT(email) DO NOTHING", (email, hash_password(password)))
+            bootstrap_operator(con)
         return
     if not turso_credentials()[0]: DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db() as con:
@@ -190,12 +200,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, state TEXT, list_id INTEGER REFERENCES lead_lists(id), total INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_items(batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, PRIMARY KEY(batch_id,lead_id));
         """)
-        if not os.environ.get("VERCEL") and not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
-            email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
-            password = os.environ.get("ADMIN_PASSWORD", "")
-            if not email or len(password) < 12 or "@" not in email:
-                raise RuntimeError("Defina ADMIN_EMAIL e ADMIN_PASSWORD (mínimo 12 caracteres) para criar o primeiro operador.")
-            con.execute("INSERT OR IGNORE INTO users(email,password_hash) VALUES(?,?)", (email, hash_password(password)))
+        bootstrap_operator(con)
         if not os.environ.get("VERCEL"):
             # A thread local retoma campanhas interrompidas em reinícios do processo.
             con.execute("UPDATE campaigns SET status='queued',updated_at=? WHERE status IN ('running','enriching')", (now(),))
@@ -630,33 +635,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def user(self):
-        if vercel_sso_only(self.headers.get("Host", "")):
-            return {"email": "Acesso pela Vercel", "id": None, "csrf": "vercel-sso", "sso": True, "role": "admin"}
         cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
         token = cookies.get("crm_session", "")
         if not token: return None
         digest = hashlib.sha256(token.encode()).hexdigest()
         with db() as con:
-            google = rowdict(con.execute("SELECT email,csrf FROM google_sessions WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
-            if google:
-                owner = os.environ.get("CRM_ADMIN_GOOGLE_EMAIL", "").strip().lower()
-                if owner and hmac.compare_digest(google["email"], owner):
-                    return {"email": google["email"], "id": None, "csrf": google["csrf"], "role": "admin", "sso": False, "google": True}
-                authorized = con.execute("SELECT 1 FROM google_users WHERE email=? AND revoked_at IS NULL AND expires_at>?", (google["email"], now())).fetchone()
-                if authorized:
-                    return {"email": google["email"], "id": None, "csrf": google["csrf"], "role": "collaborator", "sso": False, "google": True}
-            if os.environ.get("SUPABASE_URL"):
-                return None
-            access = rowdict(con.execute("SELECT phone,csrf FROM phone_sessions WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
-            if access:
-                owner = con.execute("SELECT value FROM app_settings WHERE name='admin_whatsapp'").fetchone()
-                if owner and owner[0] == access["phone"]:
-                    return {"email": access["phone"], "id": None, "csrf": access["csrf"], "role": "admin", "sso": False}
-                identity = con.execute("SELECT 1 FROM collaborator_phones WHERE phone=? AND revoked_at IS NULL AND expires_at>?", (access["phone"], now())).fetchone()
-                if identity: return {"email": access["phone"], "id": None, "csrf": access["csrf"], "role": "collaborator", "sso": False}
             old = rowdict(con.execute("SELECT users.email,users.id,sessions.csrf FROM sessions JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
-            if old and not os.environ.get("VERCEL"): return {**old, "role": "admin", "sso": False}
-        return None
+            if old: return {**old, "role": "admin", "sso": False}
+            # Legacy tokens from the previous authentication flows have no authority.
+            return None
 
     def json_body(self):
         size = int(self.headers.get("Content-Length", "0"))
@@ -676,25 +663,14 @@ class Handler(BaseHTTPRequestHandler):
                 name, ctype = STATIC[path]
                 return self.send((ROOT / "static" / name).read_bytes(), content_type=ctype)
             if not path.startswith("/api/"): raise ApiError("Página não encontrada", 404)
-            if os.environ.get("VERCEL") and not (vercel_sso_only(self.headers.get("Host", "")) or google_host(self.headers.get("Host", ""))):
+            if os.environ.get("VERCEL") and not google_host(self.headers.get("Host", "")):
                 raise ApiError("Acesso disponível apenas pelo endereço protegido da Vercel.", 403)
-            if method == "GET" and path == "/api/access/status":
-                return self.send({"available": bool(not os.environ.get("VERCEL") or public_host(self.headers.get("Host", "")))})
             if method == "GET" and path == "/api/auth/config":
-                return self.send({"google": bool(os.environ.get("SUPABASE_URL")), "available": bool(not os.environ.get("VERCEL") or google_host(self.headers.get("Host", "")))})
-            if method == "GET" and path == "/api/auth/google/start":
-                return self.start_google_login()
-            if method == "GET" and path == "/api/auth/google/callback":
-                return self.complete_google_login()
-            if method == "POST" and path == "/api/access/verify":
-                if os.environ.get("SUPABASE_URL"): raise ApiError("Use o login com Google", 404)
-                host = self.headers.get("Host", "")
-                if os.environ.get("VERCEL") and not public_host(host): raise ApiError("Use o endereço público de colaboradores", 403)
-                if self.headers.get("Origin") != ("https://" if os.environ.get("VERCEL") else "http://") + host:
-                    raise ApiError("Origem da requisição inválida", 403)
-                return self.verify_access()
+                return self.send({"password": True, "available": True})
             if method == "POST" and path == "/api/login":
-                if os.environ.get("VERCEL"): raise ApiError("Use o acesso pela Vercel", 404)
+                host = self.headers.get("Host", "")
+                if os.environ.get("VERCEL") and self.headers.get("Origin") != "https://" + host:
+                    raise ApiError("Origem da requisição inválida", 403)
                 return self.login()
             user = self.user()
             if not user: raise ApiError("Entre para continuar", 401)
@@ -704,6 +680,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError("Origem da requisição inválida", 403)
             if method != "GET" and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"]): raise ApiError("Sessão inválida; recarregue a página", 403)
             if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "role": user["role"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "google": bool(user.get("google")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "resend": bool(service_key("resend")), "serverless": bool(os.environ.get("VERCEL"))})
+            if path.startswith("/api/access/") or path.startswith("/api/auth/google/"):
+                raise ApiError("Acesso antigo desativado", 404)
             if path == "/api/access/google-users":
                 if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
                 if method == "GET": return self.list_google_users()
@@ -802,20 +780,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def login(self):
         address = self.client_address[0]
-        with LOGIN_LOCK:
-            attempts = [t for t in LOGIN_FAILURES.get(address, []) if time.time() - t < 900]
-            LOGIN_FAILURES[address] = attempts
-            if len(attempts) >= 8: raise ApiError("Muitas tentativas. Tente novamente mais tarde.", 429)
+        lock_key = hashlib.sha256(("crm-login:" + address).encode()).hexdigest()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat(timespec="seconds")
+        with db() as con:
+            limit = con.execute("SELECT attempts,started_at FROM access_login_limits WHERE client_hash=?", (lock_key,)).fetchone()
+            if limit and limit[1] > cutoff and limit[0] >= 8:
+                raise ApiError("Muitas tentativas. Tente novamente mais tarde.", 429)
         body = self.json_body()
         email = str(body.get("email", "")).strip().lower()
         password = str(body.get("password", ""))
         # Uniformly slow failure response to discourage guessing.
         with db() as con: user = rowdict(con.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone())
         if not user or not verify_password(password, user["password_hash"]):
-            with LOGIN_LOCK: LOGIN_FAILURES[address].append(time.time())
+            with db() as con:
+                if limit and limit[1] > cutoff:
+                    con.execute("UPDATE access_login_limits SET attempts=attempts+1 WHERE client_hash=?", (lock_key,))
+                else:
+                    con.execute("INSERT INTO access_login_limits(client_hash,attempts,started_at) VALUES(?,?,?) ON CONFLICT(client_hash) DO UPDATE SET attempts=excluded.attempts,started_at=excluded.started_at", (lock_key, 1, now()))
             time.sleep(0.6)
             raise ApiError("E-mail ou senha inválidos", 401)
-        with LOGIN_LOCK: LOGIN_FAILURES.pop(address, None)
+        with db() as con: con.execute("DELETE FROM access_login_limits WHERE client_hash=?", (lock_key,))
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         with db() as con:
             con.execute("DELETE FROM sessions WHERE expires_at<?", (now(),))

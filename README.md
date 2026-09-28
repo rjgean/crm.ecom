@@ -1,21 +1,18 @@
 # CRM de prospecção para sites e lojas virtuais
 
-## Supabase e login Google (em preparação)
+## Login simples e banco dos leads
 
-O CRM usa um esquema privado `crm` no PostgreSQL do Supabase e login Google por Supabase Auth com PKCE. O projeto novo `crm-ecom` (ref. `nhuputjibipbyxtocsac`, região São Paulo) foi criado com as tabelas vazias. O Turso contém somente dados de teste e não será migrado. **Não ative a troca em Production até testar o login e a API na prévia.** O deployment atual continua operando com as variáveis antigas enquanto a troca é preparada. Nunca envie senhas nem chaves pelo chat ou repositório.
+O CRM usa um único login de e-mail e senha. O administrador é criado na primeira inicialização usando `ADMIN_EMAIL` e `ADMIN_PASSWORD` (mínimo de 12 caracteres) definidos **na Vercel**, nunca no código. Em **Configurações** ele pode trocar a senha. Se perdê-la, altere `ADMIN_PASSWORD` na Vercel e faça um novo deployment: o sistema redefinirá a senha e encerrará as sessões antigas. Google OAuth, Resend e códigos por WhatsApp não são necessários.
 
-1. No painel Google Cloud, crie as credenciais OAuth e ative o provedor Google em Supabase Auth. Registre `https://crm-ecom-ten.vercel.app/api/auth/google/callback` nos Redirect URLs de Auth e configure `https://nhuputjibipbyxtocsac.supabase.co/auth/v1/callback` nas credenciais Google.
-2. No projeto Supabase, copie a URL PostgreSQL **Session pooler** em **Connect** para `SUPABASE_DB_URL` (server-only), a URL HTTPS do projeto para `SUPABASE_URL` e sua **publishable key** para `SUPABASE_PUBLISHABLE_KEY`. Defina `CRM_ADMIN_GOOGLE_EMAIL` como o e-mail verificado na conta Google proprietária. Defina uma nova `CRM_CREDENTIALS_KEY` aleatória longa, estável, só no servidor.
-3. Configure em **Preview** `SUPABASE_DB_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `CRM_ADMIN_GOOGLE_EMAIL=pagamentocreamberry@gmail.com` e `CRM_CREDENTIALS_KEY`. Cadastre também o callback da URL de Preview na lista de Redirect URLs do Supabase. Entre com Google na prévia protegida e verifique acesso, leads, chaves, papéis e importação.
-4. Depois configure as mesmas variáveis em **Production** e `CRM_PUBLIC_HOST=crm-ecom-ten.vercel.app`. Faça deploy mantendo a proteção Vercel em **All Deployments**, teste no domínio principal e só depois mude a proteção para **Standard Protection** para os colaboradores chegarem ao login Google.
+O banco persistente é o projeto Supabase [`crm-ecom`](https://supabase.com/dashboard/project/nhuputjibipbyxtocsac), na região de São Paulo. Importe JSON da Apify ou use as buscas do CRM: campanhas, leads, observações, listas e atividades são armazenados no mesmo PostgreSQL. No deployment Vercel, `SUPABASE_DB_URL` é obrigatória; sem ela a API retorna 503 e não grava no Turso. Os dados antigos de teste não serão migrados.
 
-Na aba **Acessos**, o ADM cadastra os e-mails Google e o prazo de cada pessoa. Usuários sem cadastro ou com acesso vencido recebem bloqueio mesmo que tenham uma conta Google válida. Para colaboradores, **Configurações** mostra apenas o estado das ferramentas, sem chaves, e o servidor rejeita alterações de integrações ou acessos.
+Para ativar: configure `SUPABASE_DB_URL` com a URI privada do **Session pooler** do Supabase em Preview e Production; configure `ADMIN_EMAIL` e `ADMIN_PASSWORD` nos mesmos ambientes; mantenha `CRM_CREDENTIALS_KEY` para cifrar as chaves da Apify/Firecrawl salvas no painel. Teste primeiro a prévia, depois a produção. A proteção da Vercel em **All Deployments** intercepta a tela do CRM; após testar a autenticação na prévia, configure **Standard Protection** para mostrar o login próprio no domínio principal. A prévia pode permanecer protegida pela Vercel. Nunca envie a senha ou a URI do banco pelo chat.
 
 ## Objetivo
 
 Encontrar empresas e profissionais locais que ainda não possuem site próprio ou loja virtual, reunir evidências públicas sobre a presença digital de cada negócio e organizar a venda consultiva de sites e lojas criadas pelo operador na Nuvemshop ou Yampi. Oferta inicial: implantação entre R$ 1.500 e R$ 3.000, com valor definido na proposta individual.
 
-**Estado atual:** a produção ainda roda a versão anterior, com Turso e acesso por token. A versão em preparação usa PostgreSQL Supabase e login Google; as tabelas estão criadas e vazias, mas o provedor Google, a conexão PostgreSQL e as variáveis da Vercel ainda precisam de configuração antes da troca. As integrações externas foram testadas com respostas simuladas; a execução ao vivo exige as chaves reais e um teste de ponta a ponta.
+**Estado atual:** a produção ainda usa a versão anterior. A prévia desta mudança passa a usar somente e-mail/senha e Supabase para persistência. A execução ao vivo das integrações exige as chaves reais e um teste de ponta a ponta.
 
 ## Iniciar a aplicação
 
@@ -23,7 +20,7 @@ Requisitos: Python 3.12+ e `pip install -r requirements.txt`.
 
 1. Configure as variáveis de `.env.example` no ambiente. Para uma primeira execução local, use um e-mail de operador e uma senha exclusiva de pelo menos 12 caracteres. O arquivo `.env` **não é carregado automaticamente**: exporte as variáveis no shell, no gerenciador de serviço ou na hospedagem.
 2. Execute `python server.py` e abra `http://127.0.0.1:8080` (ou o HOST/PORT definidos). O diretório `data/` será criado automaticamente para o SQLite.
-3. Entre com as credenciais configuradas; altere a senha em Configurações após o primeiro acesso. A senha inicial do ambiente só é usada ao criar o banco, não redefine uma senha já alterada.
+3. Entre com as credenciais configuradas; altere a senha em Configurações após o primeiro acesso. Para redefinir uma senha esquecida, mude `ADMIN_PASSWORD` na Vercel e faça novo deployment.
 4. Insira as chaves da Apify e Firecrawl em **Configurações**. Em execução local, defina antes uma variável `CRM_CREDENTIALS_KEY` com um valor aleatório e durável de pelo menos 32 caracteres. Como alternativa, configure `APIFY_TOKEN` e `FIRECRAWL_API_KEY` no servidor. Sem chaves, cadastro manual, importação CSV, listas, CRM, mensagens e exportação funcionam normalmente.
 5. Para testar: `python -m unittest discover -s tests -v` e `node --check static/app.js` se tiver Node instalado.
 
@@ -46,12 +43,9 @@ O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, 
 | Variável | Uso |
 | --- | --- |
 | `SUPABASE_DB_URL` | URI PostgreSQL privada do Session pooler do projeto `crm-ecom`; necessária para API. |
-| `SUPABASE_URL` | `https://nhuputjibipbyxtocsac.supabase.co`; URL pública de Auth. |
-| `SUPABASE_PUBLISHABLE_KEY` | Chave publishable do projeto Supabase, obtida em **Project Settings → API Keys**. |
-| `CRM_ADMIN_GOOGLE_EMAIL` | `pagamentocreamberry@gmail.com`; proprietário com acesso completo. |
-| `CRM_PUBLIC_HOST` | `crm-ecom-ten.vercel.app` somente ao habilitar a produção Google. |
-| `ADMIN_EMAIL` | Apenas execução local fora da Vercel: e-mail do operador. |
-| `ADMIN_PASSWORD` | Apenas execução local fora da Vercel: senha inicial com ao menos 12 caracteres. |
+| `CRM_PUBLIC_HOST` | Opcional: endereço principal exato; padrão `crm-ecom-ten.vercel.app`. |
+| `ADMIN_EMAIL` | Seu e-mail de login, configurado no servidor para o primeiro acesso. |
+| `ADMIN_PASSWORD` | Senha inicial com ao menos 12 caracteres; troque pela interface após entrar. |
 | `APIFY_TOKEN` | Token privado da Apify; habilita campanhas. |
 | `FIRECRAWL_API_KEY` | Chave privada da Firecrawl; habilita enriquecimento. |
 | `CRM_CREDENTIALS_KEY` | Chave privada, aleatória e estável para cifrar as credenciais de integrações. |
@@ -59,7 +53,7 @@ O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, 
 
 Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira a senha do banco, a chave de cifragem ou chaves de integrações em `.env.example`, no repositório ou em prints. A API devolve 503 até a conexão Supabase estar válida. Cada campanha pode gerar cobranças na Apify e Firecrawl; valide uma busca pequena antes de aumentar o volume.
 
-**Acesso na Vercel:** configure o Google OAuth no projeto novo e comprove que o e-mail ADM entra na prévia antes de liberar o domínio principal. A aba **Acessos** gerencia os e-mails Google dos colaboradores e seus prazos. No servidor local sem Supabase, o login com senha continua disponível.
+**Acesso na Vercel:** a tela inicial pede somente e-mail e senha. A proteção própria da Vercel para a produção precisa ser alterada para Standard Protection depois de testar a prévia; enquanto estiver em All Deployments, a Vercel mostra seu login antes da tela do CRM.
 
 **Atenção aos ambientes:** a produção acompanha `main` e a mudança de banco e login está na branch `supabase-google-migration` (Preview). Variáveis adicionadas em Preview precisam de novo deployment dessa branch. O Turso permanece apenas como configuração legada da produção até a troca.
 
@@ -193,14 +187,10 @@ O botão **Gerar prompt Lovable** prepara um texto editável para **site institu
 
 ## Mensagens por IA para WhatsApp
 
-Crie uma chave gratuita no [console Groq](https://console.groq.com/keys) e salve-a em **Configurações → Groq · mensagens com IA**; o CRM cifra a chave no banco Turso e realiza as chamadas apenas no servidor. Alternativamente configure `GROQ_API_KEY` no servidor. O modelo é `openai/gpt-oss-20b`; consulte a [cota efetiva da sua organização](https://console.groq.com/settings/limits) antes de planejar o volume diário.
+Crie uma chave gratuita no [console Groq](https://console.groq.com/keys) e salve-a em **Configurações → Groq · mensagens com IA**; o CRM cifra a chave no banco Supabase e realiza as chamadas apenas no servidor. Alternativamente configure `GROQ_API_KEY` no servidor. O modelo é `openai/gpt-oss-20b`; consulte a [cota efetiva da sua organização](https://console.groq.com/settings/limits) antes de planejar o volume diário.
 
 No lead, abra **Preparar WhatsApp**, informe o nome da pessoa somente se confirmado e uma observação verdadeira sobre o Instagram caso tenha analisado o perfil. Caso já tenha criado uma prévia, cole o link HTTPS e confirme que ela existe; só marque imagens reais quando tiver permissão de uso. Clique **Gerar mensagem com IA**, revise o texto editável e abra a conversa no WhatsApp para enviar manualmente. O botão gera um rascunho por clique e não cria sites, pesquisa o Instagram, nem envia mensagens automaticamente. Sem uma prévia real confirmada, a mensagem propõe mostrar uma ideia em vez de alegar que um site já está pronto.
 
-## Acessos de colaboradores
+## Exportação de leads
 
-Na aba **Ferramentas → Acessos**, o administrador cadastra o próprio WhatsApp e os números de cada colaborador com prazo de uso. Ele clica **Gerar ID e enviar pelo WhatsApp** no cadastro da pessoa, abre a conversa pronta e confirma o envio manualmente. A tela de entrada em `https://crm-ecom-ten.vercel.app/` contém somente o campo de token para quem ainda não está autenticado. O token de 12 caracteres expira em 10 minutos, tem uso único e fica armazenado apenas como hash no Turso. A sessão do colaborador termina em até sete dias ou no prazo configurado; a revogação encerra o acesso imediatamente. Colaboradores não gerenciam acessos nem chaves.
-
-O administrador pode clicar **Gerar meu token de administrador** em Acessos; esse token expira em 60 minutos para iniciar uma sessão administrativa. Cadastre seu número e confirme a emissão do token antes de mudar a proteção do domínio. Se perder o acesso administrativo, use um deployment Preview ainda protegido pela Vercel para cadastrar seu número e emitir outro token. O WhatsApp comum usa `wa.me` e exige o envio manual; não há disparo automático de mensagens. Os registros antigos por e-mail permanecem apenas como histórico.
-
-**Publicação no domínio principal:** defina `CRM_PUBLIC_HOST=crm-ecom-ten.vercel.app` no ambiente **Production** da Vercel, faça um novo deploy e altere **Deployment Protection → Vercel Authentication** de **All Deployments** para **Standard Protection**. Assim o domínio de produção mostra a tela de token e os deployments Preview continuam protegidos pela Vercel. Antes dessa alteração a própria Vercel intercepta visitantes externos, impedindo a exibição da tela. Não libere a produção antes de cadastrar o WhatsApp de administrador e gerar seu token; não compartilhe tokens ou URLs de mensagem com terceiros.
+Em **Exportações**, baixe CSV para guardar uma cópia no seu computador. O download não apaga leads: o PostgreSQL do Supabase continua sendo a base ativa. Aproximadamente 3.000 leads com campos textuais e algumas observações por empresa costumam ocupar uma pequena fração do limite gratuito, mas o tamanho real depende dos textos e evidências armazenados. Consulte o uso do projeto no painel Supabase periodicamente.

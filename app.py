@@ -2,7 +2,7 @@
 import io
 import threading
 from flask import Flask, Response, request
-from server import Handler, init_db, turso_credentials
+from server import Handler, init_db
 import os
 
 app = Flask(__name__)
@@ -15,8 +15,8 @@ _lock = threading.Lock()
 def dispatch(path):
     global _ready
     if path.startswith("api/"):
-        if not os.environ.get("SUPABASE_DB_URL") and not all(turso_credentials()):
-            return {"error": "Banco de dados não configurado na hospedagem."}, 503
+        if not os.environ.get("SUPABASE_DB_URL"):
+            return {"error": "Configure a conexão privada do Supabase na hospedagem para salvar os leads."}, 503
         if not _ready:
             with _lock:
                 if not _ready:
