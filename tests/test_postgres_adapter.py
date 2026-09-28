@@ -1,12 +1,15 @@
 """Check SQL compatibility and reject unverified Google identities."""
 import unittest
 import sys
+import json
+from decimal import Decimal
 from types import ModuleType
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from postgres_backend import Connection, HybridRow
 import postgres_backend
+import server
 import supabase_auth
 
 
@@ -33,6 +36,33 @@ class FakeRaw:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_dashboard_encodes_postgres_average_as_json(self):
+        class Query:
+            def __init__(self, sql):
+                self.value = Decimal("0.0") if "AVG(score)" in sql else 0
+
+            def fetchone(self):
+                return (self.value,)
+
+            def __iter__(self):
+                return iter(())
+
+        class Database:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def execute(self, sql):
+                return Query(sql)
+
+        handler = object.__new__(server.Handler)
+        handler.send = lambda data: json.loads(json.dumps(data))
+        with patch.object(server, "db", return_value=Database()):
+            result = handler.dashboard()
+        self.assertEqual(result["metrics"]["avg_score"], 0.0)
+
     def test_vercel_qualifies_pooler_username(self):
         psycopg = ModuleType("psycopg")
         conninfo = ModuleType("psycopg.conninfo")
