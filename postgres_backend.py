@@ -83,6 +83,10 @@ def connect(url):
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
     params = conninfo_to_dict(url)
     project = "nhuputjibipbyxtocsac"
+    if os.environ.get("VERCEL") and params.get("host", "").endswith(".pooler.supabase.com") and params.get("user") == "postgres":
+        # The shared pooler requires the tenant-qualified username even when
+        # the direct connection string uses the plain postgres account.
+        return Connection(make_conninfo("", **{**params, "user": f"postgres.{project}"}))
     if os.environ.get("VERCEL") and params.get("host") == f"db.{project}.supabase.co" and params.get("user") == "postgres":
         for shard in ("0", "1"):
             pooler = make_conninfo("", **{
