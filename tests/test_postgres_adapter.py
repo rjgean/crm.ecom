@@ -33,6 +33,22 @@ class FakeRaw:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_vercel_qualifies_pooler_username(self):
+        psycopg = ModuleType("psycopg")
+        conninfo = ModuleType("psycopg.conninfo")
+        psycopg.OperationalError = Exception
+        conninfo.conninfo_to_dict = lambda url: {
+            "host": urlsplit(url).hostname, "user": urlsplit(url).username,
+            "password": urlsplit(url).password, "dbname": urlsplit(url).path.lstrip("/"),
+        }
+        conninfo.make_conninfo = lambda _unused, **params: params
+        url = "postgresql://postgres:test-password@aws-0-sa-east-1.pooler.supabase.com:5432/postgres"
+        with patch.dict(sys.modules, {"psycopg": psycopg, "psycopg.conninfo": conninfo}), patch.dict("os.environ", {"VERCEL": "1"}), patch.object(postgres_backend, "Connection") as connection:
+            postgres_backend.connect(url)
+            connection.assert_called_once()
+            self.assertEqual(connection.call_args.args[0]["user"], "postgres.nhuputjibipbyxtocsac")
+            self.assertEqual(connection.call_args.args[0]["password"], "test-password")
+
     def test_vercel_uses_ipv4_session_pooler_with_existing_credentials(self):
         direct = "postgresql://postgres:test-password@db.nhuputjibipbyxtocsac.supabase.co:5432/postgres"
         psycopg = ModuleType("psycopg")
