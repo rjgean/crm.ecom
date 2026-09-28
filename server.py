@@ -622,7 +622,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store" if content_type.startswith("application/json") else "public, max-age=300")
+        # Internal UI changes must appear immediately after deployment, including
+        # the JS and CSS that render newly added sidebar modules.
+        self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'")
@@ -740,9 +742,14 @@ class Handler(BaseHTTPRequestHandler):
                 if user["role"] != "admin" or not user["id"]: raise ApiError("Senha não disponível para este acesso", 403)
                 if user.get("sso"): raise ApiError("A senha é gerenciada pela Vercel", 404)
                 return self.change_password(user)
+            if method == "POST" and path == "/api/change-email":
+                if user["role"] != "admin" or not user["id"]: raise ApiError("E-mail não disponível para este acesso", 403)
+                if user.get("sso"): raise ApiError("O e-mail é gerenciado pela Vercel", 404)
+                return self.change_email(user)
             if method == "GET" and path == "/api/dashboard": return self.dashboard()
             if method == "GET" and path == "/api/leads": return self.leads()
             if method == "GET" and path == "/api/local/summary": return self.local_summary()
+            if method == "GET" and path == "/api/local/radar": return self.local_radar()
             if method == "POST" and path == "/api/leads": return self.create_lead()
             if method == "POST" and path == "/api/import": return self.import_leads()
             if method == "POST" and path == "/api/import-apify": return self.import_apify()
@@ -1028,6 +1035,21 @@ class Handler(BaseHTTPRequestHandler):
             con.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
         return self.send({"ok": True}, headers={"Set-Cookie": "crm_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
 
+    def change_email(self, user):
+        body = self.json_body()
+        email = str(body.get("email", "")).strip().lower()
+        current = str(body.get("current", ""))
+        if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ApiError("Informe um e-mail válido")
+        with db() as con:
+            saved = con.execute("SELECT email,password_hash FROM users WHERE id=?", (user["id"],)).fetchone()
+            if not saved or not verify_password(current, saved[1]): raise ApiError("Senha atual incorreta", 403)
+            if saved[0] == email: raise ApiError("Este já é seu e-mail atual")
+            if con.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone(): raise ApiError("E-mail já cadastrado", 409)
+            con.execute("UPDATE users SET email=? WHERE id=?", (email, user["id"]))
+            con.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
+        return self.send({"ok": True}, headers={"Set-Cookie": "crm_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
+
     def dashboard(self):
         with db() as con:
             counts = {"found": con.execute("SELECT COALESCE(SUM(found),0) FROM campaigns").fetchone()[0], "saved": con.execute("SELECT COUNT(*) FROM leads WHERE blocked=0").fetchone()[0], "no_site": con.execute("SELECT COUNT(*) FROM leads WHERE digital_status IN ('sem_site_identificado','apenas_redes') AND blocked=0").fetchone()[0], "contacted": con.execute("SELECT COUNT(DISTINCT lead_id) FROM activities WHERE kind IN ('whatsapp_aberto','ligacao')").fetchone()[0], "proposals": con.execute("SELECT COUNT(*) FROM leads WHERE stage IN ('proposta','negociacao','ganho')").fetchone()[0], "customers": con.execute("SELECT COUNT(*) FROM leads WHERE stage='ganho'").fetchone()[0], "avg_score": round(float(con.execute("SELECT COALESCE(AVG(score),0) FROM leads WHERE blocked=0").fetchone()[0]), 1)}
@@ -1035,7 +1057,9 @@ class Handler(BaseHTTPRequestHandler):
             activity = [dict(x) for x in con.execute("SELECT a.*,l.name FROM activities a LEFT JOIN leads l ON l.id=a.lead_id ORDER BY a.id DESC LIMIT 8")]
             stages = [dict(x) for x in con.execute("SELECT stage,COUNT(*) count FROM leads WHERE blocked=0 GROUP BY stage")]
             niches = [dict(x) for x in con.execute("SELECT category,COUNT(*) count FROM leads WHERE blocked=0 AND category IS NOT NULL GROUP BY category ORDER BY count DESC LIMIT 12")]
-            return self.send({"metrics": counts, "recent": recent, "activity": activity, "stages": stages, "niches": niches})
+            digital = [dict(x) for x in con.execute("SELECT digital_status,COUNT(*) count FROM leads WHERE blocked=0 GROUP BY digital_status")]
+            cities = [dict(x) for x in con.execute("SELECT city,COUNT(*) count FROM leads WHERE blocked=0 AND city IS NOT NULL AND city<>'' GROUP BY city ORDER BY count DESC LIMIT 5")]
+            return self.send({"metrics": counts, "recent": recent, "activity": activity, "stages": stages, "niches": niches, "digital": digital, "cities": cities})
 
     def leads(self):
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -1062,6 +1086,33 @@ class Handler(BaseHTTPRequestHandler):
             where = " AND (name LIKE ? OR city LIKE ? OR category LIKE ?)" if query else ""
             rows = [dict(x) for x in con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,stage,digital_status,score FROM leads WHERE blocked=0" + where + " ORDER BY id DESC LIMIT 100", (["%" + query + "%"] * 3) if query else ())]
         return self.send({"items": rows})
+
+    def local_radar(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        clauses, params = ["blocked=0"], []
+        for field, column in (("city", "city"), ("niche", "category")):
+            value = query.get(field, [""])[0].strip()[:100]
+            if value:
+                clauses.append(f"LOWER({column}) LIKE LOWER(?)")
+                params.append("%" + value + "%")
+        state = query.get("state", [""])[0].strip().upper()[:2]
+        if state:
+            if not re.fullmatch(r"[A-Z]{2}", state): raise ApiError("UF inválida")
+            clauses.append("state=?")
+            params.append(state)
+        for field, comparator in (("min_rating", ">="), ("max_reviews", "<=")):
+            value = query.get(field, [""])[0].strip()
+            if value:
+                try: number = float(value) if field == "min_rating" else int(value)
+                except ValueError: raise ApiError("Filtro de avaliações inválido")
+                if not 0 <= number <= (5 if field == "min_rating" else 1000000): raise ApiError("Filtro de avaliações inválido")
+                clauses.append(f"{'rating' if field == 'min_rating' else 'reviews_count'} {comparator} ?")
+                params.append(number)
+        where = " AND ".join(clauses)
+        with db() as con:
+            total = con.execute("SELECT COUNT(*) FROM leads WHERE " + where, params).fetchone()[0]
+            rows = [dict(x) for x in con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,digital_status,stage FROM leads WHERE " + where + " ORDER BY id DESC LIMIT 200", params)]
+        return self.send({"items": rows, "total": total})
 
     def local_detail(self, lead_id):
         with db() as con:

@@ -342,6 +342,30 @@ class CRMTests(unittest.TestCase):
         with server.db() as con:
             con.execute("UPDATE users SET password_hash=? WHERE email=?", (server.hash_password("TestingPassphrase123!"), "operator@example.test"))
 
+    def test_email_change_requires_password_and_expires_sessions(self):
+        self.login()
+        path = "/change-email"
+        self.assertEqual(self.request("POST", path, {"email":"new@example.test","current":"TestingPassphrase123!"}, with_csrf=False)[0], 403)
+        self.assertEqual(self.request("POST", path, {"email":"new@example.test","current":"wrong"})[0], 403)
+        self.assertEqual(self.request("POST", path, {"email":"not-an-email","current":"TestingPassphrase123!"})[0], 400)
+        self.assertEqual(self.request("POST", path, {"email":"NEW@example.test","current":"TestingPassphrase123!"})[0], 200)
+        self.assertEqual(self.request("GET", "/me")[0], 401)
+        self.assertEqual(self.request("POST", "/login", {"email":"operator@example.test","password":"TestingPassphrase123!"})[0], 401)
+        status, session = self.request("POST", "/login", {"email":"new@example.test","password":"TestingPassphrase123!"})
+        self.assertEqual(status, 200)
+        self.csrf = session["csrf"]
+        self.assertEqual(self.request("POST", path, {"email":"operator@example.test","current":"TestingPassphrase123!"})[0], 200)
+
+    def test_local_radar_filters_saved_businesses(self):
+        self.login()
+        self.request("POST", "/leads", {"name":"Radar Céu Teste","category":"Cerâmica de teste","city":"Niterói","state":"RJ","rating":4.8,"reviews_count":6})
+        self.request("POST", "/leads", {"name":"Radar Mar Teste","category":"Cerâmica de teste","city":"Niterói","state":"RJ","rating":3.8,"reviews_count":100})
+        status, result = self.request("GET", "/local/radar?city=Niter%C3%B3i&niche=Cer%C3%A2mica%20de%20teste&state=RJ&min_rating=4.5&max_reviews=10")
+        self.assertEqual(status, 200)
+        self.assertEqual([row["name"] for row in result["items"]], ["Radar Céu Teste"])
+        self.assertEqual(self.request("GET", "/local/radar?min_rating=9")[0], 400)
+        self.assertEqual(self.request("GET", "/local/radar?min_rating=NaN")[0], 400)
+
 
 if __name__ == "__main__":
     unittest.main()
