@@ -78,16 +78,15 @@ def connect(url):
     # Supabase's direct endpoint resolves to IPv6 on the Free plan. Vercel's
     # serverless runtime needs the IPv4 shared session pooler for this project.
     # Reuse the password already stored privately in SUPABASE_DB_URL.
-    import os
     from psycopg import OperationalError
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
     params = conninfo_to_dict(url)
     project = "nhuputjibipbyxtocsac"
-    if os.environ.get("VERCEL") and params.get("host", "").endswith(".pooler.supabase.com") and params.get("user") == "postgres":
+    if params.get("host", "").endswith(".pooler.supabase.com") and params.get("user") == "postgres":
         # The shared pooler requires the tenant-qualified username even when
         # the direct connection string uses the plain postgres account.
         return Connection(make_conninfo("", **{**params, "user": f"postgres.{project}"}))
-    if os.environ.get("VERCEL") and params.get("host") == f"db.{project}.supabase.co" and params.get("user") == "postgres":
+    if params.get("host") == f"db.{project}.supabase.co" and params.get("user") == "postgres":
         for shard in ("0", "1"):
             pooler = make_conninfo("", **{
                 **params, "host": f"aws-{shard}-sa-east-1.pooler.supabase.com",
