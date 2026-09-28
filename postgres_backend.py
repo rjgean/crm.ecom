@@ -75,4 +75,23 @@ class Connection:
 def connect(url):
     if not url.startswith(("postgresql://", "postgres://")):
         raise ValueError("SUPABASE_DB_URL precisa ser uma URL PostgreSQL do pooler")
+    # Supabase's direct endpoint resolves to IPv6 on the Free plan. Vercel's
+    # serverless runtime needs the IPv4 shared session pooler for this project.
+    # Reuse the password already stored privately in SUPABASE_DB_URL.
+    import os
+    from psycopg import OperationalError
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    params = conninfo_to_dict(url)
+    project = "nhuputjibipbyxtocsac"
+    if os.environ.get("VERCEL") and params.get("host") == f"db.{project}.supabase.co" and params.get("user") == "postgres":
+        for shard in ("0", "1"):
+            pooler = make_conninfo("", **{
+                **params, "host": f"aws-{shard}-sa-east-1.pooler.supabase.com",
+                "user": f"postgres.{project}", "port": "5432", "sslmode": "require",
+            })
+            try:
+                return Connection(pooler)
+            except OperationalError:
+                continue
+        raise RuntimeError("Pooler IPv4 do Supabase indisponível. Use a URI Session pooler do projeto crm-ecom na Vercel.")
     return Connection(url)

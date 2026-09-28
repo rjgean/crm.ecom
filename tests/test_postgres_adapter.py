@@ -1,8 +1,12 @@
 """Check SQL compatibility and reject unverified Google identities."""
 import unittest
+import sys
+from types import ModuleType
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from postgres_backend import Connection, HybridRow
+import postgres_backend
 import supabase_auth
 
 
@@ -29,6 +33,34 @@ class FakeRaw:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_vercel_uses_ipv4_session_pooler_with_existing_credentials(self):
+        direct = "postgresql://postgres:test-password@db.nhuputjibipbyxtocsac.supabase.co:5432/postgres"
+        psycopg = ModuleType("psycopg")
+        conninfo = ModuleType("psycopg.conninfo")
+        class OperationalError(Exception):
+            pass
+        psycopg.OperationalError = OperationalError
+        conninfo.conninfo_to_dict = lambda url: {
+            "host": urlsplit(url).hostname, "user": urlsplit(url).username,
+            "password": urlsplit(url).password, "dbname": urlsplit(url).path.lstrip("/"),
+        }
+        conninfo.make_conninfo = lambda _unused, **params: params
+        with patch.dict(sys.modules, {"psycopg": psycopg, "psycopg.conninfo": conninfo}), patch.dict("os.environ", {"VERCEL": "1"}), patch.object(postgres_backend, "Connection") as connection:
+            expected = object()
+            connection.side_effect = [OperationalError("unavailable"), expected]
+            result = postgres_backend.connect(direct)
+            self.assertIs(result, expected)
+            self.assertEqual(connection.call_count, 2)
+            first, second = (call.args[0] for call in connection.call_args_list)
+            self.assertEqual([first["host"], second["host"]], [
+                "aws-0-sa-east-1.pooler.supabase.com", "aws-1-sa-east-1.pooler.supabase.com"
+            ])
+            self.assertEqual(first["user"], "postgres.nhuputjibipbyxtocsac")
+            self.assertEqual(first["password"], "test-password")
+            self.assertEqual(first["port"], "5432")
+            self.assertEqual(first["sslmode"], "require")
+            self.assertIsNotNone(result)
+
     def test_sqlite_style_insert_and_rows_work_with_postgres(self):
         connection = object.__new__(Connection)
         connection.raw = FakeRaw()
