@@ -39,7 +39,7 @@ class AdapterTests(unittest.TestCase):
     def test_dashboard_encodes_postgres_average_as_json(self):
         class Query:
             def __init__(self, sql):
-                self.value = Decimal("0.0") if "AVG(score)" in sql else 0
+                self.value = Decimal("2.5") if "AVG(score)" in sql else Decimal("30") if "SUM(found)" in sql else 0
 
             def fetchone(self):
                 return (self.value,)
@@ -61,7 +61,9 @@ class AdapterTests(unittest.TestCase):
         handler.send = lambda data: json.loads(json.dumps(data))
         with patch.object(server, "db", return_value=Database()):
             result = handler.dashboard()
-        self.assertEqual(result["metrics"]["avg_score"], 0.0)
+        self.assertEqual(result["metrics"]["avg_score"], 2.5)
+        self.assertEqual(result["metrics"]["found"], 30)
+        self.assertIsInstance(result["metrics"]["found"], int)
 
     def test_vercel_qualifies_pooler_username(self):
         psycopg = ModuleType("psycopg")
