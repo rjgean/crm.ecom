@@ -1065,7 +1065,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def local_detail(self, lead_id):
         with db() as con:
-            lead = rowdict(con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,stage,digital_status,score FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone())
+            lead = rowdict(con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,stage,digital_status,score,offer,amount FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone())
             if not lead: raise ApiError("Empresa não encontrada", 404)
             peers = [dict(x) for x in con.execute("SELECT id,name,rating,reviews_count FROM leads WHERE blocked=0 AND category=? AND city=? AND state=? AND rating IS NOT NULL AND id<>? ORDER BY rating DESC,reviews_count DESC LIMIT 50", (lead["category"], lead["city"], lead["state"], lead_id))] if all(lead.get(k) for k in ("category","city","state")) else []
             grid = rowdict(con.execute("SELECT value,collected_at FROM observations WHERE lead_id=? AND kind='grid_local' ORDER BY id DESC LIMIT 1", (lead_id,)).fetchone())
