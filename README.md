@@ -1,14 +1,13 @@
 # CRM de prospecção para sites e lojas virtuais
 
-## Migração para Supabase e login Google (em preparação)
+## Supabase e login Google (em preparação)
 
-O código suporta um esquema privado `crm` no PostgreSQL do Supabase e login Google por Supabase Auth com PKCE. **Não mude `SUPABASE_DB_URL` em Production até migrar e conferir todos os registros.** O deployment antigo Turso continua operando sem essas variáveis. Nenhuma variável de administrador ou chave de banco deve ser enviada por mensagem.
+O CRM usa um esquema privado `crm` no PostgreSQL do Supabase e login Google por Supabase Auth com PKCE. O projeto novo `crm-ecom` (ref. `nhuputjibipbyxtocsac`, região São Paulo) foi criado com as tabelas vazias. O Turso contém somente dados de teste e não será migrado. **Não ative a troca em Production até testar o login e a API na prévia.** O deployment atual continua operando com as variáveis antigas enquanto a troca é preparada. Nunca envie senhas nem chaves pelo chat ou repositório.
 
-1. Crie um projeto Supabase **exclusivo para este CRM**; não reutilize um projeto de outra aplicação. No painel Google Cloud, crie as credenciais OAuth e ative o provedor Google em Supabase Auth. Registre `https://crm-ecom-ten.vercel.app/api/auth/google/callback` nos Redirect URLs de Auth e configure o callback de Supabase nas credenciais Google.
+1. No painel Google Cloud, crie as credenciais OAuth e ative o provedor Google em Supabase Auth. Registre `https://crm-ecom-ten.vercel.app/api/auth/google/callback` nos Redirect URLs de Auth e configure `https://nhuputjibipbyxtocsac.supabase.co/auth/v1/callback` nas credenciais Google.
 2. No projeto Supabase, copie a URL PostgreSQL **Session pooler** em **Connect** para `SUPABASE_DB_URL` (server-only), a URL HTTPS do projeto para `SUPABASE_URL` e sua **publishable key** para `SUPABASE_PUBLISHABLE_KEY`. Defina `CRM_ADMIN_GOOGLE_EMAIL` como o e-mail verificado na conta Google proprietária. Defina uma nova `CRM_CREDENTIALS_KEY` aleatória longa, estável, só no servidor.
-3. Para copiar dados do Turso antigo, execute `migrate_turso_to_supabase.py` em um ambiente privado com `OLD_TURSO_DATABASE_URL`, `OLD_TURSO_AUTH_TOKEN`, `SUPABASE_DB_URL` e `CRM_CREDENTIALS_KEY`. Se as chaves de API eram cifradas com uma chave diferente do token Turso, informe `OLD_CRM_CREDENTIALS_KEY`. O script exige destino vazio, transfere dados e recifra chaves em uma única transação; sessões e códigos antigos não são copiados. Confira as contagens e os leads antes de trocar o domínio.
-4. Configure em **Preview** `SUPABASE_DB_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `CRM_ADMIN_GOOGLE_EMAIL` e `CRM_CREDENTIALS_KEY`. Cadastre também o callback da URL de Preview na lista de Redirect URLs do Supabase. Entre com Google na prévia protegida e verifique leads, chaves, papéis, importação e expiração.
-5. Depois configure as mesmas variáveis em **Production** e `CRM_PUBLIC_HOST=crm-ecom-ten.vercel.app`. Faça deploy mantendo a proteção Vercel em **All Deployments**, teste no domínio principal e só depois mude a proteção para **Standard Protection** para os colaboradores chegarem ao login Google.
+3. Configure em **Preview** `SUPABASE_DB_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `CRM_ADMIN_GOOGLE_EMAIL=pagamentocreamberry@gmail.com` e `CRM_CREDENTIALS_KEY`. Cadastre também o callback da URL de Preview na lista de Redirect URLs do Supabase. Entre com Google na prévia protegida e verifique acesso, leads, chaves, papéis e importação.
+4. Depois configure as mesmas variáveis em **Production** e `CRM_PUBLIC_HOST=crm-ecom-ten.vercel.app`. Faça deploy mantendo a proteção Vercel em **All Deployments**, teste no domínio principal e só depois mude a proteção para **Standard Protection** para os colaboradores chegarem ao login Google.
 
 Na aba **Acessos**, o ADM cadastra os e-mails Google e o prazo de cada pessoa. Usuários sem cadastro ou com acesso vencido recebem bloqueio mesmo que tenham uma conta Google válida. Para colaboradores, **Configurações** mostra apenas o estado das ferramentas, sem chaves, e o servidor rejeita alterações de integrações ou acessos.
 
@@ -16,7 +15,7 @@ Na aba **Acessos**, o ADM cadastra os e-mails Google e o prazo de cada pessoa. U
 
 Encontrar empresas e profissionais locais que ainda não possuem site próprio ou loja virtual, reunir evidências públicas sobre a presença digital de cada negócio e organizar a venda consultiva de sites e lojas criadas pelo operador na Nuvemshop ou Yampi. Oferta inicial: implantação entre R$ 1.500 e R$ 3.000, com valor definido na proposta individual.
 
-**Estado atual:** MVP com interface, SQLite local ou Turso remoto, campanhas Apify, enriquecimento Firecrawl, CRM, contatos individuais e exportação. Na produção pública da Vercel, o CRM exige token; as prévias podem usar a proteção da Vercel. Localmente há login de operador. As integrações externas foram testadas com respostas simuladas; a execução ao vivo exige as chaves reais e um teste de ponta a ponta no ambiente de operação. API4com, Nuvemshop, Yampi e Tooplate são ferramentas externas usadas pelo operador.
+**Estado atual:** a produção ainda roda a versão anterior, com Turso e acesso por token. A versão em preparação usa PostgreSQL Supabase e login Google; as tabelas estão criadas e vazias, mas o provedor Google, a conexão PostgreSQL e as variáveis da Vercel ainda precisam de configuração antes da troca. As integrações externas foram testadas com respostas simuladas; a execução ao vivo exige as chaves reais e um teste de ponta a ponta.
 
 ## Iniciar a aplicação
 
@@ -42,24 +41,27 @@ Use HTTPS em um proxy reverso, `COOKIE_SECURE=1`, banco SQLite em volume persist
 
 ### Publicar na Vercel
 
-O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, `vercel.json` (preset Flask) e `public/` com os arquivos da interface para a CDN. Importe o repositório na Vercel com a raiz do projeto como diretório raiz, sem configurar comando de build. Ao modificar `static/`, copie as alterações equivalentes para `public/` antes de publicar. Conecte um banco **Turso Cloud persistente** (a integração no marketplace pode fornecer as duas variáveis `TURSO_*`). Em **Project → Settings → Environment Variables**, configure para Production e Preview:
+O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, `vercel.json` (preset Flask) e `public/` com os arquivos da interface para a CDN. Ao modificar `static/`, copie as alterações equivalentes para `public/` antes de publicar. Em **Project → Settings → Environment Variables**, configure primeiro para Preview e, após o teste, para Production:
 
 | Variável | Uso |
 | --- | --- |
-| `TURSO_DATABASE_URL` ou `crmecom_TURSO_DATABASE_URL` | URL do banco Turso associado ao projeto; obrigatória para API. |
-| `TURSO_AUTH_TOKEN` ou `crmecom_TURSO_AUTH_TOKEN` | Token privado de acesso ao banco; obrigatório. |
+| `SUPABASE_DB_URL` | URI PostgreSQL privada do Session pooler do projeto `crm-ecom`; necessária para API. |
+| `SUPABASE_URL` | `https://nhuputjibipbyxtocsac.supabase.co`; URL pública de Auth. |
+| `SUPABASE_PUBLISHABLE_KEY` | Chave publishable do projeto Supabase, obtida em **Project Settings → API Keys**. |
+| `CRM_ADMIN_GOOGLE_EMAIL` | `pagamentocreamberry@gmail.com`; proprietário com acesso completo. |
+| `CRM_PUBLIC_HOST` | `crm-ecom-ten.vercel.app` somente ao habilitar a produção Google. |
 | `ADMIN_EMAIL` | Apenas execução local fora da Vercel: e-mail do operador. |
 | `ADMIN_PASSWORD` | Apenas execução local fora da Vercel: senha inicial com ao menos 12 caracteres. |
 | `APIFY_TOKEN` | Token privado da Apify; habilita campanhas. |
 | `FIRECRAWL_API_KEY` | Chave privada da Firecrawl; habilita enriquecimento. |
-| `CRM_CREDENTIALS_KEY` | Opcional na Vercel: chave durável e exclusiva para cifrar as credenciais salvas pela interface; é obrigatória para salvá-las se a aplicação não usa Turso. |
+| `CRM_CREDENTIALS_KEY` | Chave privada, aleatória e estável para cifrar as credenciais de integrações. |
 | `COOKIE_SECURE` | Defina `1` em HTTPS (na Vercel já é o padrão). |
 
-Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira as chaves no formulário do CRM, em `.env.example`, no repositório ou em prints. A interface estática abre mesmo sem banco; a API devolve 503 até as duas variáveis Turso estarem válidas. A tela de busca avança as campanhas em etapas enquanto permanece aberta; se você sair dela, volte para continuar. Cada campanha pode gerar cobranças na Apify e Firecrawl. Para uso comercial, valide uma busca pequena com as chaves reais e os custos dos provedores antes de aumentar o volume.
+Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira a senha do banco, a chave de cifragem ou chaves de integrações em `.env.example`, no repositório ou em prints. A API devolve 503 até a conexão Supabase estar válida. Cada campanha pode gerar cobranças na Apify e Firecrawl; valide uma busca pequena antes de aumentar o volume.
 
-**Acesso na Vercel:** configure o domínio principal como público somente após o administrador cadastrar seu WhatsApp e gerar um token. Veja as etapas em **Acessos de colaboradores**. As prévias protegidas pela Vercel permitem acesso administrativo. No servidor local, o login de operador por senha continua disponível na API.
+**Acesso na Vercel:** configure o Google OAuth no projeto novo e comprove que o e-mail ADM entra na prévia antes de liberar o domínio principal. A aba **Acessos** gerencia os e-mails Google dos colaboradores e seus prazos. No servidor local sem Supabase, o login com senha continua disponível.
 
-**Atenção aos ambientes:** o domínio de produção acompanha a branch `main`, enquanto o CRM desta PR está em `feat/prospeccao-sites-sem-site` (Preview). Ao conectar o Turso e editar variáveis para Preview, faça redeploy do deployment **dessa branch** ou envie outro commit nela. Um redeploy da produção recria apenas o commit da `main` e não atualiza o Preview.
+**Atenção aos ambientes:** a produção acompanha `main` e a mudança de banco e login está na branch `supabase-google-migration` (Preview). Variáveis adicionadas em Preview precisam de novo deployment dessa branch. O Turso permanece apenas como configuração legada da produção até a troca.
 
 As buscas da Apify e do Firecrawl são cobradas nas contas dos provedores. O limite de 1 a 100 empresas restringe a leitura e os resultados pretendidos; custos finais e limites efetivos do ator precisam ser validados na conta conectada. O app não envia mensagens automaticamente nem comprova que um número tem WhatsApp. A API4com é usada à parte para ligação.
 
