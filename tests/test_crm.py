@@ -57,6 +57,91 @@ class CRMTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.csrf = value["csrf"]
 
+    def test_local_diagnostics_manual_grid_and_dynamic_review_qr(self):
+        self.login()
+        company = {"name":"Ateliê Sol de Outubro", "category":"Loja de roupas", "city":"Niterói", "state":"RJ", "rating":4.5, "reviews_count":27}
+        _, first = self.request("POST", "/leads", company)
+        _, second = self.request("POST", "/leads", {**company, "name":"Ateliê Lua de Outubro", "rating":4.9, "reviews_count":8})
+        lead_id = first["id"]
+        _, info = self.request("GET", f"/leads/{lead_id}/local")
+        self.assertEqual(info["lead"]["name"], company["name"])
+        self.assertIn(second["id"], [p["id"] for p in info["peers"]])
+        self.assertEqual(self.request("POST", f"/leads/{lead_id}/local", {"query":"roupas", "cells":[1]*8})[0], 400)
+        self.assertEqual(self.request("POST", f"/leads/{lead_id}/local", {"query":"roupas", "cells":[1]*9}, with_csrf=False)[0], 403)
+        status, result = self.request("POST", f"/leads/{lead_id}/local", {"query":"roupas femininas", "cells":[1,2,None,4,5,6,7,8,9]})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["grid"]["cells"][2], None)
+        self.assertEqual(self.request("POST", f"/leads/{lead_id}/review-qr", {"destination":"https://evil.example/"})[0], 400)
+        _, qr = self.request("POST", f"/leads/{lead_id}/review-qr", {"destination":"https://g.page/r/Example/review"})
+        token = qr["token"]
+        _, updated = self.request("POST", f"/leads/{lead_id}/review-qr", {"destination":"https://www.google.com/maps/place/Example"})
+        self.assertEqual(token, updated["token"])
+        image = self.opener.open(self.base + f"/api/leads/{lead_id}/review-qr.svg")
+        self.assertIn(b"<svg", image.read())
+        class StopRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, request, fp, code, msg, headers, newurl):
+                return None
+        opener = urllib.request.build_opener(StopRedirect)
+        with self.assertRaises(urllib.error.HTTPError) as redirected:
+            opener.open(self.base + "/r/" + token)
+        self.assertEqual(redirected.exception.code, 303)
+        self.assertEqual(redirected.exception.headers["Location"], "https://www.google.com/maps/place/Example")
+        _, qr = self.request("GET", f"/leads/{lead_id}/review-qr")
+        self.assertEqual(qr["scans"], 1)
+
+    def test_apify_local_profile_and_real_grid_jobs(self):
+        self.login()
+        _, lead = self.request("POST", "/leads", {"name":"Café Lua Azul", "city":"Niterói", "state":"RJ", "category":"Café"})
+        lead_id = lead["id"]
+        with patch.dict(os.environ,{"APIFY_TOKEN":"only-for-tests"}):
+            status, _ = self.request("POST",f"/leads/{lead_id}/local/profile/run",{})
+            self.assertEqual(status,200)
+            def profile_provider(url,token,payload=None,timeout=35):
+                if url.endswith("/runs"):
+                    self.assertTrue(payload["scrapePlaceDetailPage"])
+                    self.assertEqual(payload["maxReviews"],10)
+                    return {"data":{"id":"profile-test-run"}}
+                if "actor-runs" in url:return {"data":{"status":"SUCCEEDED","defaultDatasetId":"profile-dataset"}}
+                return [{"title":"Café Lua Azul","totalScore":4.6,"reviewsCount":27,"reviews":[{"responseFromOwnerText":"Obrigado!"},{}],"images":["x","y"],"ownerUpdates":[]}]
+            with patch.object(server,"request_json",side_effect=profile_provider):
+                self.request("POST",f"/leads/{lead_id}/local/profile/advance",{})
+                status,result=self.request("POST",f"/leads/{lead_id}/local/profile/advance",{})
+            self.assertEqual(status,200)
+            self.assertEqual(result["profile"]["answered_sample"],1)
+            self.assertEqual(result["lead"]["rating"],4.6)
+            status,_=self.request("POST",f"/leads/{lead_id}/local/grid/run",{"term":"café"})
+            self.assertEqual(status,200)
+            def grid_provider(url,token,payload=None,timeout=35):
+                if url.endswith("/runs"):
+                    self.assertEqual(payload["gridSize"],3)
+                    return {"data":{"id":"grid-test-run"}}
+                if "actor-runs" in url:return {"data":{"status":"SUCCEEDED","defaultDatasetId":"grid-dataset"}}
+                return [{"recordType":"point","keyword":"café","row":i//3,"col":i%3,"rank":i+1,"lat":-22.9,"lng":-43.1} for i in range(9)]+[{"recordType":"summary","keyword":"café","arp":5,"solv":62,"found":9,"total":9}]
+            with patch.object(server,"request_json",side_effect=grid_provider):
+                self.request("POST",f"/leads/{lead_id}/local/grid/advance",{})
+                status,result=self.request("POST",f"/leads/{lead_id}/local/grid/advance",{})
+            self.assertEqual(status,200)
+            self.assertEqual(result["grid"]["cells"],list(range(1,10)))
+            self.assertEqual(result["grid"]["solv"],62)
+
+    def test_proposal_and_contract_are_saved_with_pdf(self):
+        self.login()
+        _, lead=self.request("POST","/leads",{"name":"Loja Horizonte Sete","city":"Niterói","state":"RJ"})
+        lead_id=lead["id"]
+        path=f"/leads/{lead_id}/local-document/proposal"
+        self.assertEqual(self.request("POST",path,{"body":"Curto"})[0],400)
+        self.assertEqual(self.request("POST",path,{"body":"Proposta de site institucional. Valor R$ 1.500,00 e prazo de 30 dias para aprovação."},with_csrf=False)[0],403)
+        status,document=self.request("POST",path,{"body":"Proposta de site institucional. Valor R$ 1.500,00 e prazo de 30 dias para aprovação."})
+        self.assertEqual(status,200)
+        self.assertIn("R$ 1.500",document["body"])
+        _,lead_detail=self.request("GET",f"/leads/{lead_id}")
+        self.assertEqual(lead_detail["stage"],"proposta")
+        response=self.opener.open(self.base+"/api"+path+".pdf")
+        self.assertEqual(response.headers["Content-Type"],"application/pdf")
+        self.assertTrue(response.read().startswith(b"%PDF"))
+        contract="Dados para contrato: empresa Loja Horizonte Sete; serviços, preço, entregas e prazo a serem aprovados pelas partes."
+        self.assertEqual(self.request("POST",f"/leads/{lead_id}/local-document/contract",{"body":contract})[0],200)
+
     def test_groq_draft_requires_real_preview_for_ready_site_claim(self):
         self.login()
         _, lead = self.request("POST", "/leads", {"name": "Loja Aurora", "city": "Niterói", "state": "RJ", "phone": "21999998888"})
@@ -80,53 +165,6 @@ class CRMTests(unittest.TestCase):
                 self.assertEqual(status, 429)
                 self.assertIn("Limite gratuito", message["error"])
 
-    def test_collaborator_whatsapp_token_is_admin_issued_and_expires(self):
-        self.login()
-        phone = "5521999988777"
-        expiry = (server.datetime.now(server.timezone.utc) + server.timedelta(days=2)).isoformat()
-        self.assertEqual(self.request("POST", "/access/settings", {"admin_whatsapp": "21988887777"})[0], 200)
-        self.assertEqual(self.request("POST", "/access/collaborators", {"phone": "21999988777", "expires_at": expiry})[0], 201)
-        with patch.dict(os.environ, {"CRM_ACCESS_SECRET": "a-very-long-local-key-used-for-access-testing"}):
-            self.assertEqual(self.request("POST", "/access/request", {"phone": phone})[0], 404)
-            with server.db() as con:
-                identifier = con.execute("SELECT id FROM collaborator_phones WHERE phone=?", (phone,)).fetchone()[0]
-            self.assertEqual(self.request("POST", f"/access/collaborators/{identifier}/issue", {}, with_csrf=False)[0], 403)
-            status, result = self.request("POST", f"/access/collaborators/{identifier}/issue", {})
-            self.assertEqual(status, 200)
-            message = urllib.parse.unquote(result["whatsapp_url"].split("text=", 1)[1])
-            self.assertTrue(result["whatsapp_url"].startswith("https://wa.me/" + phone))
-            code = message.split("é ", 1)[1][:14]
-            self.assertEqual(len(code), 14)
-            self.assertEqual(self.request("POST", "/access/verify", {"code": "XXXX-XXXX-XXXX"})[0], 401)
-            with server.db() as con:
-                self.assertNotIn(code, con.execute("SELECT code_hash FROM phone_challenges WHERE phone=?", (phone,)).fetchone()[0])
-            self.assertEqual(self.request("POST", "/access/verify", {"code": code})[0], 200)
-            self.assertEqual(self.request("POST", "/access/verify", {"code": code})[0], 401)
-            status, me = self.request("GET", "/me")
-            self.assertEqual((status, me["role"]), (200, "collaborator"))
-            self.csrf = me["csrf"]
-            self.assertEqual(self.request("POST", "/integrations", {"service": "groq", "token": "not-allowed-secret"})[0], 403)
-            self.assertEqual(self.request("GET", "/access/collaborators")[0], 403)
-            with server.db() as con:
-                con.execute("UPDATE collaborator_phones SET expires_at=? WHERE phone=?", (server.now(), phone))
-            self.assertEqual(self.request("GET", "/me")[0], 401)
-            self.login()
-            self.assertEqual(self.request("DELETE", f"/access/collaborators/{identifier}")[0], 200)
-
-    def test_administrator_can_log_in_with_own_whatsapp_token(self):
-        self.login()
-        self.assertEqual(self.request("POST", "/access/settings", {"admin_whatsapp": "21988886666"})[0], 200)
-        with patch.dict(os.environ, {"CRM_ACCESS_SECRET": "a-very-long-local-key-used-for-access-testing"}):
-            self.assertEqual(self.request("POST", "/access/admin/issue", {}, with_csrf=False)[0], 403)
-            status, result = self.request("POST", "/access/admin/issue", {})
-            self.assertEqual(status, 200)
-            self.assertEqual(result["expires_in_seconds"], 3600)
-            code = urllib.parse.unquote(result["whatsapp_url"].split("text=", 1)[1]).split("é ", 1)[1][:14]
-            self.assertEqual(self.request("POST", "/access/verify", {"code": code})[0], 200)
-            status, me = self.request("GET", "/me")
-            self.assertEqual((status, me["role"]), (200, "admin"))
-            self.csrf = me["csrf"]
-            self.assertEqual(self.request("GET", "/access/settings")[0], 200)
     def test_integration_credentials_are_encrypted_and_never_returned(self):
         self.login()
         secret = "apify-test-only-long-secret-123"

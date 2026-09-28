@@ -42,13 +42,8 @@ def now():
 
 
 def vercel_sso_only(host=""):
-    # This exact production alias remains under All Deployments protection.
-    # Never infer admin privilege from arbitrary *.vercel.app domains.
-    protected = os.environ.get("CRM_PROTECTED_HOST", "crm-ecom-ten.vercel.app").lower().strip()
-    hostname = host.lower().split(":")[0]
-    return bool(os.environ.get("VERCEL") and not public_host(host) and
-                ((os.environ.get("VERCEL_ENV") == "preview" and (hostname == protected or bool(re.fullmatch(r"crm-ecom-[a-z0-9-]+-orange-even-projects\.vercel\.app", hostname)))) or
-                 (os.environ.get("VERCEL_ENV") == "production" and hostname == protected)))
+    # Vercel deployment protection is not an application session.
+    return False
 
 
 def turso_credentials():
@@ -62,8 +57,34 @@ SERVICE_ENV = {"apify": "APIFY_TOKEN", "firecrawl": "FIRECRAWL_API_KEY", "groq":
 
 
 def public_host(host):
-    return bool(os.environ.get("VERCEL") and os.environ.get("CRM_PUBLIC_HOST") and
-                host.lower().split(":")[0] == os.environ["CRM_PUBLIC_HOST"].lower().strip())
+    return bool(os.environ.get("VERCEL") and
+                host.lower().split(":")[0] == os.environ.get("CRM_PUBLIC_HOST", "crm-ecom-ten.vercel.app").lower().strip())
+
+
+def google_host(host):
+    hostname = host.lower().split(":")[0]
+    return bool(public_host(host) or (os.environ.get("VERCEL_ENV") == "preview" and
+                re.fullmatch(r"crm-ecom-[a-z0-9-]+-orange-even-projects\.vercel\.app", hostname)))
+
+
+def bootstrap_operator(con):
+    """Create the operator and allow an explicit password rotation in hosting settings."""
+    operator = con.execute("SELECT id,email FROM users ORDER BY id LIMIT 1").fetchone()
+    email = (os.environ.get("ADMIN_EMAIL") or os.environ.get("CRM_ADMIN_GOOGLE_EMAIL") or "").strip().lower()
+    password = os.environ.get("ADMIN_PASSWORD", "")
+    if operator:
+        seed = con.execute("SELECT value FROM app_settings WHERE name='admin_env_password_hash'").fetchone()
+        if seed and len(password) >= 12 and not verify_password(password, seed[0]):
+            if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                raise RuntimeError("Configure ADMIN_EMAIL para redefinir a senha.")
+            con.execute("UPDATE users SET email=?,password_hash=? WHERE id=?", (email, hash_password(password), operator[0]))
+            con.execute("UPDATE app_settings SET value=? WHERE name='admin_env_password_hash'", (hash_password(password),))
+            con.execute("DELETE FROM sessions")
+        return
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) or len(password) < 12:
+        raise RuntimeError("Configure ADMIN_EMAIL e ADMIN_PASSWORD (mínimo 12 caracteres) na hospedagem.")
+    con.execute("INSERT OR IGNORE INTO users(email,password_hash) VALUES(?,?)", (email, hash_password(password)))
+    con.execute("INSERT OR IGNORE INTO app_settings(name,value) VALUES('admin_env_password_hash',?)", (hash_password(password),))
 
 
 def access_digest(code):
@@ -117,6 +138,10 @@ def save_service_key(service, value):
 
 
 def db():
+    postgres_url = os.environ.get("SUPABASE_DB_URL")
+    if postgres_url:
+        from postgres_backend import connect
+        return connect(postgres_url)
     url, token = turso_credentials()
     if url:
         import turso_serverless
@@ -133,6 +158,11 @@ def db():
 
 
 def init_db():
+    if os.environ.get("SUPABASE_DB_URL"):
+        with db() as con:
+            con.executescript((ROOT / "schema" / "supabase.sql").read_text())
+            bootstrap_operator(con)
+        return
     if not turso_credentials()[0]: DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db() as con:
         con.executescript("""
@@ -164,15 +194,18 @@ def init_db():
         CREATE TABLE IF NOT EXISTS phone_sessions(token_hash TEXT PRIMARY KEY, phone TEXT NOT NULL, csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS access_login_limits(client_hash TEXT PRIMARY KEY, attempts INTEGER NOT NULL, started_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS phone_access_requests(phone TEXT PRIMARY KEY, requested_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS google_users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, revoked_at TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS google_sessions(token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS oauth_states(token_hash TEXT PRIMARY KEY, verifier TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, state TEXT, list_id INTEGER REFERENCES lead_lists(id), total INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_items(batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, PRIMARY KEY(batch_id,lead_id));
+        CREATE TABLE IF NOT EXISTS review_qr(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, destination TEXT NOT NULL, scans INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS local_jobs(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, run_id TEXT, status TEXT NOT NULL DEFAULT 'queued', term TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS local_jobs_recent ON local_jobs(lead_id,kind,id DESC);
+        CREATE TABLE IF NOT EXISTS local_documents(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS local_documents_recent ON local_documents(lead_id,kind,id DESC);
         """)
-        if not os.environ.get("VERCEL") and not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
-            email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
-            password = os.environ.get("ADMIN_PASSWORD", "")
-            if not email or len(password) < 12 or "@" not in email:
-                raise RuntimeError("Defina ADMIN_EMAIL e ADMIN_PASSWORD (mínimo 12 caracteres) para criar o primeiro operador.")
-            con.execute("INSERT OR IGNORE INTO users(email,password_hash) VALUES(?,?)", (email, hash_password(password)))
+        bootstrap_operator(con)
         if not os.environ.get("VERCEL"):
             # A thread local retoma campanhas interrompidas em reinícios do processo.
             con.execute("UPDATE campaigns SET status='queued',updated_at=? WHERE status IN ('running','enriching')", (now(),))
@@ -531,7 +564,7 @@ def import_summary(batch_id):
     with db() as con:
         batch = rowdict(con.execute("SELECT * FROM import_batches WHERE id=?", (batch_id,)).fetchone())
         if not batch: raise ApiError("Importação não encontrada", 404)
-        batch["items"] = [dict(row) for row in con.execute("SELECT i.lead_id,i.status,i.error,l.name,l.city,l.state,l.website,l.instagram,l.digital_status,l.score FROM import_items i JOIN leads l ON l.id=i.lead_id WHERE i.batch_id=? ORDER BY i.rowid LIMIT 500", (batch_id,))]
+        batch["items"] = [dict(row) for row in con.execute("SELECT i.lead_id,i.status,i.error,l.name,l.city,l.state,l.website,l.instagram,l.digital_status,l.score FROM import_items i JOIN leads l ON l.id=i.lead_id WHERE i.batch_id=? ORDER BY i.lead_id LIMIT 500", (batch_id,))]
     batch["processed"] = sum(item["status"] in ("done", "error", "skipped") for item in batch["items"])
     return batch
 
@@ -542,7 +575,7 @@ def advance_import(batch_id):
         batch = con.execute("SELECT status,updated_at FROM import_batches WHERE id=?", (batch_id,)).fetchone()
         if not batch: raise ApiError("Importação não encontrada", 404)
         if batch[0] in ("done", "paused"): return import_summary(batch_id)
-        item = con.execute("SELECT lead_id FROM import_items WHERE batch_id=? AND status='pending' ORDER BY rowid LIMIT 1", (batch_id,)).fetchone()
+        item = con.execute("SELECT lead_id FROM import_items WHERE batch_id=? AND status='pending' ORDER BY lead_id LIMIT 1", (batch_id,)).fetchone()
         if item:
             lead_id = item[0]
             claimed = con.execute("UPDATE import_items SET status='processing' WHERE batch_id=? AND lead_id=? AND status='pending'", (batch_id, lead_id)).rowcount
@@ -597,24 +630,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def redirect(self, location, cookies=()):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        for cookie in cookies:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+
     def user(self):
-        if vercel_sso_only(self.headers.get("Host", "")):
-            return {"email": "Acesso pela Vercel", "id": None, "csrf": "vercel-sso", "sso": True, "role": "admin"}
         cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
         token = cookies.get("crm_session", "")
         if not token: return None
         digest = hashlib.sha256(token.encode()).hexdigest()
         with db() as con:
-            access = rowdict(con.execute("SELECT phone,csrf FROM phone_sessions WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
-            if access:
-                owner = con.execute("SELECT value FROM app_settings WHERE name='admin_whatsapp'").fetchone()
-                if owner and owner[0] == access["phone"]:
-                    return {"email": access["phone"], "id": None, "csrf": access["csrf"], "role": "admin", "sso": False}
-                identity = con.execute("SELECT 1 FROM collaborator_phones WHERE phone=? AND revoked_at IS NULL AND expires_at>?", (access["phone"], now())).fetchone()
-                if identity: return {"email": access["phone"], "id": None, "csrf": access["csrf"], "role": "collaborator", "sso": False}
             old = rowdict(con.execute("SELECT users.email,users.id,sessions.csrf FROM sessions JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
-            if old and not os.environ.get("VERCEL"): return {**old, "role": "admin", "sso": False}
-        return None
+            if old: return {**old, "role": "admin", "sso": False}
+            # Legacy tokens from the previous authentication flows have no authority.
+            return None
 
     def json_body(self):
         size = int(self.headers.get("Content-Length", "0"))
@@ -630,22 +664,20 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, method):
         path = urllib.parse.urlsplit(self.path).path
         try:
+            match = re.fullmatch(r"/r/([A-Za-z0-9_-]{24,80})", path)
+            if method == "GET" and match: return self.review_redirect(match[1])
             if method == "GET" and path in STATIC:
                 name, ctype = STATIC[path]
                 return self.send((ROOT / "static" / name).read_bytes(), content_type=ctype)
             if not path.startswith("/api/"): raise ApiError("Página não encontrada", 404)
-            if os.environ.get("VERCEL") and not (vercel_sso_only(self.headers.get("Host", "")) or public_host(self.headers.get("Host", ""))):
+            if os.environ.get("VERCEL") and not google_host(self.headers.get("Host", "")):
                 raise ApiError("Acesso disponível apenas pelo endereço protegido da Vercel.", 403)
-            if method == "GET" and path == "/api/access/status":
-                return self.send({"available": bool(not os.environ.get("VERCEL") or public_host(self.headers.get("Host", "")))})
-            if method == "POST" and path == "/api/access/verify":
-                host = self.headers.get("Host", "")
-                if os.environ.get("VERCEL") and not public_host(host): raise ApiError("Use o endereço público de colaboradores", 403)
-                if self.headers.get("Origin") != ("https://" if os.environ.get("VERCEL") else "http://") + host:
-                    raise ApiError("Origem da requisição inválida", 403)
-                return self.verify_access()
+            if method == "GET" and path == "/api/auth/config":
+                return self.send({"password": True, "available": True})
             if method == "POST" and path == "/api/login":
-                if os.environ.get("VERCEL"): raise ApiError("Use o acesso pela Vercel", 404)
+                host = self.headers.get("Host", "")
+                if os.environ.get("VERCEL") and self.headers.get("Origin") != "https://" + host:
+                    raise ApiError("Origem da requisição inválida", 403)
                 return self.login()
             user = self.user()
             if not user: raise ApiError("Entre para continuar", 401)
@@ -654,7 +686,17 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get("Origin") != "https://" + host:
                     raise ApiError("Origem da requisição inválida", 403)
             if method != "GET" and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"]): raise ApiError("Sessão inválida; recarregue a página", 403)
-            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "role": user["role"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "resend": bool(service_key("resend")), "serverless": bool(os.environ.get("VERCEL"))})
+            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "role": user["role"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "google": bool(user.get("google")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "resend": bool(service_key("resend")), "serverless": bool(os.environ.get("VERCEL"))})
+            if path.startswith("/api/access/") or path.startswith("/api/auth/google/"):
+                raise ApiError("Acesso antigo desativado", 404)
+            if path == "/api/access/google-users":
+                if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
+                if method == "GET": return self.list_google_users()
+                if method == "POST": return self.add_google_user()
+            match = re.fullmatch(r"/api/access/google-users/(\d+)", path)
+            if match and method == "DELETE":
+                if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
+                return self.revoke_google_user(int(match[1]))
             if path.startswith("/api/access/collaborators") and user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
             if path == "/api/access/settings":
                 if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
@@ -692,6 +734,7 @@ class Handler(BaseHTTPRequestHandler):
                     con.execute("DELETE FROM sessions WHERE token_hash=?", (digest,))
                     con.execute("DELETE FROM access_sessions WHERE token_hash=?", (digest,))
                     con.execute("DELETE FROM phone_sessions WHERE token_hash=?", (digest,))
+                    con.execute("DELETE FROM google_sessions WHERE token_hash=?", (digest,))
                 return self.send({"ok": True}, headers={"Set-Cookie": "crm_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
             if method == "POST" and path == "/api/change-password":
                 if user["role"] != "admin" or not user["id"]: raise ApiError("Senha não disponível para este acesso", 403)
@@ -699,6 +742,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.change_password(user)
             if method == "GET" and path == "/api/dashboard": return self.dashboard()
             if method == "GET" and path == "/api/leads": return self.leads()
+            if method == "GET" and path == "/api/local/summary": return self.local_summary()
             if method == "POST" and path == "/api/leads": return self.create_lead()
             if method == "POST" and path == "/api/import": return self.import_leads()
             if method == "POST" and path == "/api/import-apify": return self.import_apify()
@@ -720,6 +764,26 @@ class Handler(BaseHTTPRequestHandler):
                 lead_id = int(match[1])
                 if method == "GET": return self.lead_detail(lead_id)
                 if method == "PATCH": return self.update_lead(lead_id)
+            match = re.fullmatch(r"/api/leads/(\d+)/local", path)
+            if match:
+                if method == "GET": return self.local_detail(int(match[1]))
+                if method == "POST": return self.save_local_grid(int(match[1]))
+            match = re.fullmatch(r"/api/leads/(\d+)/local/(profile|grid)/run", path)
+            if match and method == "POST": return self.start_local_job(int(match[1]), match[2])
+            match = re.fullmatch(r"/api/leads/(\d+)/local/(profile|grid)/advance", path)
+            if match and method == "POST": return self.advance_local_job(int(match[1]), match[2])
+            match = re.fullmatch(r"/api/leads/(\d+)/local-document/(proposal|contract)", path)
+            if match:
+                if method == "GET": return self.get_local_document(int(match[1]),match[2])
+                if method == "POST": return self.save_local_document(int(match[1]),match[2])
+            match = re.fullmatch(r"/api/leads/(\d+)/local-document/(proposal|contract)\.pdf", path)
+            if match and method == "GET": return self.local_document_pdf(int(match[1]),match[2])
+            match = re.fullmatch(r"/api/leads/(\d+)/review-qr", path)
+            if match:
+                if method == "GET": return self.get_review_qr(int(match[1]))
+                if method == "POST": return self.save_review_qr(int(match[1]))
+            match = re.fullmatch(r"/api/leads/(\d+)/review-qr.svg", path)
+            if method == "GET" and match: return self.review_qr_svg(int(match[1]))
             match = re.fullmatch(r"/api/leads/(\d+)/instagram", path)
             if method == "POST" and match: return self.search_instagram(int(match[1]))
             match = re.fullmatch(r"/api/leads/(\d+)/message-draft", path)
@@ -744,26 +808,111 @@ class Handler(BaseHTTPRequestHandler):
 
     def login(self):
         address = self.client_address[0]
-        with LOGIN_LOCK:
-            attempts = [t for t in LOGIN_FAILURES.get(address, []) if time.time() - t < 900]
-            LOGIN_FAILURES[address] = attempts
-            if len(attempts) >= 8: raise ApiError("Muitas tentativas. Tente novamente mais tarde.", 429)
+        lock_key = hashlib.sha256(("crm-login:" + address).encode()).hexdigest()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat(timespec="seconds")
+        with db() as con:
+            limit = con.execute("SELECT attempts,started_at FROM access_login_limits WHERE client_hash=?", (lock_key,)).fetchone()
+            if limit and limit[1] > cutoff and limit[0] >= 8:
+                raise ApiError("Muitas tentativas. Tente novamente mais tarde.", 429)
         body = self.json_body()
         email = str(body.get("email", "")).strip().lower()
         password = str(body.get("password", ""))
         # Uniformly slow failure response to discourage guessing.
         with db() as con: user = rowdict(con.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone())
         if not user or not verify_password(password, user["password_hash"]):
-            with LOGIN_LOCK: LOGIN_FAILURES[address].append(time.time())
+            with db() as con:
+                if limit and limit[1] > cutoff:
+                    con.execute("UPDATE access_login_limits SET attempts=attempts+1 WHERE client_hash=?", (lock_key,))
+                else:
+                    con.execute("INSERT INTO access_login_limits(client_hash,attempts,started_at) VALUES(?,?,?) ON CONFLICT(client_hash) DO UPDATE SET attempts=excluded.attempts,started_at=excluded.started_at", (lock_key, 1, now()))
             time.sleep(0.6)
             raise ApiError("E-mail ou senha inválidos", 401)
-        with LOGIN_LOCK: LOGIN_FAILURES.pop(address, None)
+        with db() as con: con.execute("DELETE FROM access_login_limits WHERE client_hash=?", (lock_key,))
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         with db() as con:
             con.execute("DELETE FROM sessions WHERE expires_at<?", (now(),))
             con.execute("INSERT INTO sessions(token_hash,user_id,csrf,expires_at) VALUES(?,?,?,?)", (hashlib.sha256(token.encode()).hexdigest(), user["id"], csrf, (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(timespec="seconds")))
         secure = "; Secure" if COOKIE_SECURE else ""
         return self.send({"email": email, "csrf": csrf}, headers={"Set-Cookie": f"crm_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800{secure}"})
+
+    def start_google_login(self):
+        import supabase_auth
+
+        host = self.headers.get("Host", "")
+        if os.environ.get("VERCEL") and not google_host(host):
+            raise ApiError("Use o domínio público do CRM", 403)
+        scheme = "https" if os.environ.get("VERCEL") else "http"
+        callback = f"{scheme}://{host}/api/auth/google/callback"
+        try:
+            state, verifier, destination = supabase_auth.start_url(callback)
+        except ValueError as exc:
+            raise ApiError(str(exc), 503)
+        with db() as con:
+            con.execute("DELETE FROM oauth_states WHERE expires_at<?", (now(),))
+            con.execute("INSERT INTO oauth_states(token_hash,verifier,expires_at) VALUES(?,?,?)", (hashlib.sha256(state.encode()).hexdigest(), verifier, (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(timespec="seconds")))
+        secure = "; Secure" if COOKIE_SECURE else ""
+        return self.redirect(destination, [f"crm_oauth={state}; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=600{secure}"])
+
+    def complete_google_login(self):
+        import supabase_auth
+
+        args = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        code = args.get("code", [""])[0]
+        cookies = dict(part.strip().split("=", 1) for part in self.headers.get("Cookie", "").split(";") if "=" in part)
+        state = cookies.get("crm_oauth", "")
+        if not code or not 10 <= len(code) <= 4096 or len(state) < 32:
+            return self.redirect("/?auth_error=1")
+        with db() as con:
+            challenge = con.execute("SELECT verifier FROM oauth_states WHERE token_hash=? AND expires_at>?", (hashlib.sha256(state.encode()).hexdigest(), now())).fetchone()
+            con.execute("DELETE FROM oauth_states WHERE token_hash=?", (hashlib.sha256(state.encode()).hexdigest(),))
+        if not challenge:
+            return self.redirect("/?auth_error=1")
+        try:
+            email = supabase_auth.exchange(code, challenge[0])
+            owner = os.environ.get("CRM_ADMIN_GOOGLE_EMAIL", "").strip().lower()
+            with db() as con:
+                expiry = datetime.now(timezone.utc) + timedelta(hours=12)
+                if not hmac.compare_digest(email, owner):
+                    row = con.execute("SELECT expires_at FROM google_users WHERE email=? AND revoked_at IS NULL AND expires_at>?", (email, now())).fetchone()
+                    if not row:
+                        return self.redirect("/?auth_error=2")
+                    expiry = min(expiry, datetime.fromisoformat(row[0]))
+                session, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+                con.execute("INSERT INTO google_sessions(token_hash,email,csrf,expires_at) VALUES(?,?,?,?)", (hashlib.sha256(session.encode()).hexdigest(), email, csrf, expiry.isoformat(timespec="seconds")))
+        except ValueError:
+            return self.redirect("/?auth_error=1")
+        secure = "; Secure" if COOKIE_SECURE else ""
+        age = max(0, int((expiry - datetime.now(timezone.utc)).total_seconds()))
+        return self.redirect("/", [f"crm_session={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{secure}", f"crm_oauth=; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=0{secure}"])
+
+    def list_google_users(self):
+        with db() as con:
+            return self.send([dict(row) for row in con.execute("SELECT id,email,expires_at,revoked_at,created_at FROM google_users ORDER BY id DESC LIMIT 250")])
+
+    def add_google_user(self):
+        body = self.json_body()
+        email = str(body.get("email") or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9._%+\-]{1,64}@[a-z0-9.\-]{3,190}", email):
+            raise ApiError("Informe o e-mail da conta Google do colaborador")
+        if email == os.environ.get("CRM_ADMIN_GOOGLE_EMAIL", "").strip().lower():
+            raise ApiError("Este e-mail está reservado ao administrador")
+        try: expiry = datetime.fromisoformat(str(body.get("expires_at", "")).replace("Z", "+00:00"))
+        except ValueError: raise ApiError("Defina a data de expiração")
+        if not expiry.tzinfo: raise ApiError("A expiração precisa incluir o fuso horário")
+        expiry = expiry.astimezone(timezone.utc)
+        if not timedelta(minutes=5) <= expiry - datetime.now(timezone.utc) <= timedelta(days=365):
+            raise ApiError("Defina validade entre 5 minutos e 365 dias")
+        with db() as con:
+            con.execute("INSERT INTO google_users(email,expires_at,revoked_at,created_at) VALUES(?,?,NULL,?) ON CONFLICT(email) DO UPDATE SET expires_at=excluded.expires_at,revoked_at=NULL", (email, expiry.isoformat(timespec="seconds"), now()))
+        return self.send({"ok": True}, 201)
+
+    def revoke_google_user(self, identifier):
+        with db() as con:
+            row = con.execute("SELECT email FROM google_users WHERE id=?", (identifier,)).fetchone()
+            if not row: raise ApiError("Acesso não encontrado", 404)
+            con.execute("UPDATE google_users SET revoked_at=? WHERE id=?", (now(), identifier))
+            con.execute("DELETE FROM google_sessions WHERE email=?", (row[0],))
+        return self.send({"ok": True})
 
     def list_collaborators(self):
         with db() as con:
@@ -906,6 +1055,213 @@ class Handler(BaseHTTPRequestHandler):
             rows = [dict(x) for x in con.execute("SELECT * FROM leads WHERE " + where + " ORDER BY score DESC, id DESC LIMIT 300", params)]
         for x in rows: x["whatsapp"] = whatsapp_number(x["phone"])
         return self.send({"items": rows, "total": total})
+
+    def local_summary(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("q", [""])[0].strip()[:100]
+        with db() as con:
+            where = " AND (name LIKE ? OR city LIKE ? OR category LIKE ?)" if query else ""
+            rows = [dict(x) for x in con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,stage,digital_status,score FROM leads WHERE blocked=0" + where + " ORDER BY id DESC LIMIT 100", (["%" + query + "%"] * 3) if query else ())]
+        return self.send({"items": rows})
+
+    def local_detail(self, lead_id):
+        with db() as con:
+            lead = rowdict(con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,stage,digital_status,score,offer,amount FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone())
+            if not lead: raise ApiError("Empresa não encontrada", 404)
+            peers = [dict(x) for x in con.execute("SELECT id,name,rating,reviews_count FROM leads WHERE blocked=0 AND category=? AND city=? AND state=? AND rating IS NOT NULL AND id<>? ORDER BY rating DESC,reviews_count DESC LIMIT 50", (lead["category"], lead["city"], lead["state"], lead_id))] if all(lead.get(k) for k in ("category","city","state")) else []
+            grid = rowdict(con.execute("SELECT value,collected_at FROM observations WHERE lead_id=? AND kind='grid_local' ORDER BY id DESC LIMIT 1", (lead_id,)).fetchone())
+            profile = rowdict(con.execute("SELECT value,collected_at FROM observations WHERE lead_id=? AND kind='profile_audit' ORDER BY id DESC LIMIT 1", (lead_id,)).fetchone())
+            jobs = [dict(x) for x in con.execute("SELECT id,kind,status,term,error,updated_at FROM local_jobs WHERE lead_id=? ORDER BY id DESC LIMIT 8", (lead_id,))]
+            qr = rowdict(con.execute("SELECT token,destination,scans,updated_at FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone())
+        try: grid = {**json.loads(grid["value"]), "collected_at": grid["collected_at"]} if grid else None
+        except (ValueError, TypeError): grid = None
+        try: profile = {**json.loads(profile["value"]), "collected_at": profile["collected_at"]} if profile else None
+        except (ValueError, TypeError): profile = None
+        return self.send({"lead": lead, "peers": peers, "grid": grid, "profile": profile, "jobs": jobs, "qr": qr})
+
+    def start_local_job(self, lead_id, kind):
+        if not service_key("apify"): raise ApiError("Configure a chave Apify em Configurações", 409)
+        body = self.json_body()
+        term = str(body.get("term") or "").strip()[:100] if kind == "grid" else ""
+        if kind == "grid" and not term: raise ApiError("Informe o termo pesquisado", 400)
+        with db() as con:
+            lead = con.execute("SELECT name,city,state,blocked FROM leads WHERE id=?", (lead_id,)).fetchone()
+            if not lead or lead[3]: raise ApiError("Empresa não encontrada", 404)
+            recent = con.execute("SELECT id,status,updated_at FROM local_jobs WHERE lead_id=? AND kind=? ORDER BY id DESC LIMIT 1", (lead_id,kind)).fetchone()
+            if recent and recent[1] in ("queued","running"):
+                elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(recent[2])
+                if elapsed < timedelta(minutes=45): return self.local_detail(lead_id)
+                con.execute("UPDATE local_jobs SET status='failed',error='Execução anterior demorou demais',updated_at=? WHERE id=?", (now(), recent[0]))
+            con.execute("INSERT INTO local_jobs(lead_id,kind,status,term,created_at,updated_at) VALUES(?,?,?,?,?,?)", (lead_id,kind,"queued",term,now(),now()))
+        return self.local_detail(lead_id)
+
+    def advance_local_job(self, lead_id, kind):
+        token = service_key("apify")
+        if not token: raise ApiError("Configure a chave Apify em Configurações", 409)
+        with db() as con:
+            job = rowdict(con.execute("SELECT * FROM local_jobs WHERE lead_id=? AND kind=? ORDER BY id DESC LIMIT 1", (lead_id,kind)).fetchone())
+            lead = rowdict(con.execute("SELECT id,external_id,name,city,state,address,maps_url,blocked FROM leads WHERE id=?", (lead_id,)).fetchone())
+        if not job or not lead or lead["blocked"]: raise ApiError("Medição não encontrada", 404)
+        if job["status"] in ("done","failed"): return self.local_detail(lead_id)
+        try:
+            if job["status"] == "queued":
+                with db() as con:
+                    claimed = con.execute("UPDATE local_jobs SET status='running',updated_at=? WHERE id=? AND status='queued'", (now(),job["id"])).rowcount
+                if not claimed: return self.local_detail(lead_id)
+                if kind == "profile":
+                    query = "place_id:" + lead["external_id"] if lead["external_id"] and re.fullmatch(r"[A-Za-z0-9_-]{10,150}", lead["external_id"]) else lead["name"]
+                    payload = {"searchStringsArray":[query],"locationQuery":", ".join(x for x in (lead["city"],lead["state"],"Brasil") if x),"maxCrawledPlacesPerSearch":1,"language":"pt-BR","scrapePlaceDetailPage":True,"maxReviews":10,"scrapeReviewsPersonalData":False}
+                    actor = "compass~crawler-google-places"
+                else:
+                    if not lead["city"]: raise ApiError("Informe a cidade do lead antes da medição", 400)
+                    payload = {"businessName":lead["name"],"keywords":[job["term"]],"location":", ".join(x for x in (lead["city"],lead["state"],"Brasil") if x),"gridSize":3,"radiusMiles":1}
+                    if lead["external_id"] and re.fullmatch(r"[A-Za-z0-9_-]{10,150}",lead["external_id"]): payload["placeId"] = lead["external_id"]
+                    actor = "crashlattice57~geo-grid-rank-tracker"
+                response = request_json("https://api.apify.com/v2/actors/"+actor+"/runs",token,payload)
+                with db() as con: con.execute("UPDATE local_jobs SET run_id=?,updated_at=? WHERE id=?", (response["data"]["id"],now(),job["id"]))
+            elif job["run_id"]:
+                run = request_json("https://api.apify.com/v2/actor-runs/"+urllib.parse.quote(job["run_id"])+"/",token)["data"]
+                if run["status"] in ("FAILED","ABORTED","TIMED-OUT"): raise ApiError("A coleta da Apify falhou. Consulte a execução na Apify e tente novamente.",502)
+                if run["status"] != "SUCCEEDED": return self.local_detail(lead_id)
+                dataset = urllib.parse.quote(run["defaultDatasetId"])
+                rows = request_json(f"https://api.apify.com/v2/datasets/{dataset}/items?format=json&limit=30&offset=0",token)
+                if not isinstance(rows,list): raise ApiError("Resultado da Apify inválido",502)
+                if kind == "profile":
+                    matching = [row for row in rows if isinstance(row,dict) and (row.get("placeId") == lead["external_id"] if lead["external_id"] else key(row.get("title")) == key(lead["name"]))]
+                    if not matching: raise ApiError("A Apify não encontrou um perfil com identificação correspondente ao lead. Confira o nome e o Maps.",409)
+                    item = matching[0]
+                    reviews = item.get("reviews") if isinstance(item.get("reviews"),list) else []
+                    photos = item.get("images") if isinstance(item.get("images"),list) else []
+                    updates = item.get("ownerUpdates") if isinstance(item.get("ownerUpdates"),list) else []
+                    response_count = sum(bool(r.get("responseFromOwnerText") or r.get("responseFromOwnerDate")) for r in reviews[:10] if isinstance(r,dict))
+                    snapshot = {"source":"Apify · Google Maps", "review_sample":len(reviews[:10]),"answered_sample":response_count,"photos_sample":len(photos[:10]),"updates_sample":len(updates[:10]),"rating":item.get("totalScore"),"reviews_count":item.get("reviewsCount"),"profile_url":clean_url(item.get("url")),"sample_limited":True}
+                    with db() as con:
+                        if not lead["blocked"]:
+                            con.execute("UPDATE leads SET rating=COALESCE(?,rating),reviews_count=COALESCE(?,reviews_count),updated_at=? WHERE id=?",(snapshot["rating"],snapshot["reviews_count"],now(),lead_id))
+                        add_observation(con,lead_id,"profile_audit",json.dumps(snapshot),snapshot["profile_url"])
+                else:
+                    points = [x for x in rows if isinstance(x,dict) and x.get("recordType")=="point" and x.get("keyword")==job["term"]]
+                    summary = next((x for x in rows if isinstance(x,dict) and x.get("recordType")=="summary" and x.get("keyword")==job["term"]),{})
+                    cells = [None]*9
+                    coords = [None]*9
+                    for point in points:
+                        row,col = point.get("row"),point.get("col")
+                        if type(row) is int and type(col) is int and 0<=row<3 and 0<=col<3:
+                            rank=point.get("rank")
+                            cells[row*3+col] = rank if type(rank) is int and 1<=rank<=20 else None
+                            coords[row*3+col] = [point.get("lat"),point.get("lng")]
+                    if len(points)<9: raise ApiError("A Apify não devolveu os nove pontos. Confira a execução e tente novamente.",502)
+                    snapshot={"source":"Apify · geogrid","query":job["term"],"cells":cells,"coords":coords,"arp":summary.get("arp"),"solv":summary.get("solv"),"found":summary.get("found"),"total":summary.get("total")}
+                    with db() as con: add_observation(con,lead_id,"grid_local",json.dumps(snapshot),"")
+                with db() as con: con.execute("UPDATE local_jobs SET status='done',updated_at=? WHERE id=?",(now(),job["id"]))
+        except Exception as exc:
+            message = exc.message if isinstance(exc,ApiError) else error_text(exc)
+            with db() as con: con.execute("UPDATE local_jobs SET status='failed',error=?,updated_at=? WHERE id=?",(message,now(),job["id"]))
+        return self.local_detail(lead_id)
+
+    def save_local_grid(self, lead_id):
+        body = self.json_body()
+        query = str(body.get("query") or "").strip()[:100]
+        cells = body.get("cells")
+        if not query or not isinstance(cells, list) or len(cells) != 9 or any(value is not None and (type(value) is not int or not 1 <= value <= 20) for value in cells):
+            raise ApiError("Informe o termo e nove posições de 1 a 20; deixe em branco quando não aparecer")
+        with db() as con:
+            if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone(): raise ApiError("Empresa não encontrada", 404)
+            con.execute("INSERT INTO observations(lead_id,kind,value,source_url,collected_at) VALUES(?,?,?,?,?)", (lead_id, "grid_local", json.dumps({"query":query,"cells":cells}), None, now()))
+        return self.local_detail(lead_id)
+
+    def get_local_document(self, lead_id, kind):
+        with db() as con:
+            if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0",(lead_id,)).fetchone(): raise ApiError("Empresa não encontrada",404)
+            row = rowdict(con.execute("SELECT id,body,created_at FROM local_documents WHERE lead_id=? AND kind=? ORDER BY id DESC LIMIT 1",(lead_id,kind)).fetchone())
+        return self.send(row or {"saved":False})
+
+    def save_local_document(self, lead_id, kind):
+        body = str(self.json_body().get("body") or "").strip()
+        if not 50 <= len(body) <= 12_000: raise ApiError("O documento deve ter de 50 a 12.000 caracteres")
+        with db() as con:
+            lead=con.execute("SELECT stage FROM leads WHERE id=? AND blocked=0",(lead_id,)).fetchone()
+            if not lead: raise ApiError("Empresa não encontrada",404)
+            con.execute("INSERT INTO local_documents(lead_id,kind,body,created_at) VALUES(?,?,?,?)",(lead_id,kind,body,now()))
+            con.execute("INSERT INTO activities(lead_id,kind,detail,created_at) VALUES(?,?,?,?)",(lead_id,"proposta" if kind=="proposal" else "nota","Rascunho de proposta salvo no CRM" if kind=="proposal" else "Rascunho de contrato salvo no CRM",now()))
+            if kind=="proposal" and lead[0] in ("novo","pesquisado","qualificado","contato","respondeu","reuniao"):
+                con.execute("UPDATE leads SET stage='proposta',updated_at=? WHERE id=?",(now(),lead_id))
+        return self.get_local_document(lead_id,kind)
+
+    def local_document_pdf(self, lead_id, kind):
+        with db() as con:
+            row=con.execute("SELECT body FROM local_documents WHERE lead_id=? AND kind=? ORDER BY id DESC LIMIT 1",(lead_id,kind)).fetchone()
+        if not row: raise ApiError("Salve o documento antes de baixar o PDF",404)
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+        output=io.BytesIO()
+        pdf=canvas.Canvas(output,pagesize=A4)
+        pdf.setTitle("Proposta CRM ECOM" if kind=="proposal" else "Rascunho para contrato CRM ECOM")
+        width,height=A4
+        y=height-65
+        pdf.setFont("Helvetica-Bold",15)
+        pdf.drawString(48,y,"PROPOSTA COMERCIAL" if kind=="proposal" else "DADOS PARA CONTRATO - RASCUNHO")
+        y-=30
+        pdf.setFont("Helvetica",10)
+        for paragraph in row[0].splitlines():
+            words=paragraph.split()
+            lines=[]
+            line=""
+            for word in words:
+                candidate=(line+" "+word).strip()
+                if stringWidth(candidate,"Helvetica",10)>width-96 and line:
+                    lines.append(line);line=word
+                else:line=candidate
+            lines.append(line)
+            for textline in lines:
+                if y<58:
+                    pdf.showPage();pdf.setFont("Helvetica",10);y=height-55
+                pdf.drawString(48,y,textline[:280]);y-=15
+            if not words:y-=5
+        pdf.save()
+        return self.send(output.getvalue(),content_type="application/pdf",headers={"Cache-Control":"no-store","Content-Disposition":f'attachment; filename="{kind}-{lead_id}.pdf"'})
+
+    def get_review_qr(self, lead_id):
+        with db() as con:
+            if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone(): raise ApiError("Empresa não encontrada", 404)
+            row = rowdict(con.execute("SELECT token,destination,scans,updated_at FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone())
+        return self.send(row or {"configured": False})
+
+    def save_review_qr(self, lead_id):
+        destination = str(self.json_body().get("destination") or "").strip()
+        parsed = urllib.parse.urlsplit(destination)
+        host = (parsed.hostname or "").lower()
+        allowed = host in ("g.page", "maps.app.goo.gl", "google.com", "www.google.com", "search.google.com")
+        valid_path = (host == "maps.app.goo.gl" and bool(parsed.path.strip("/"))) or (host == "g.page" and parsed.path.startswith("/r/")) or (host in ("google.com", "www.google.com", "search.google.com") and (parsed.path == "/maps" or parsed.path.startswith(("/maps/", "/local/", "/search"))))
+        if len(destination) > 1000 or not allowed or not valid_path or parsed.scheme != "https" or parsed.username or parsed.password or parsed.port:
+            raise ApiError("Cole um link HTTPS do perfil ou avaliações no Google (google.com/maps, g.page/r ou maps.app.goo.gl)")
+        with db() as con:
+            if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone(): raise ApiError("Empresa não encontrada", 404)
+            row = con.execute("SELECT token FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone()
+            if row:
+                con.execute("UPDATE review_qr SET destination=?,updated_at=? WHERE lead_id=?", (destination, now(), lead_id))
+            else:
+                con.execute("INSERT INTO review_qr(lead_id,token,destination,created_at,updated_at) VALUES(?,?,?,?,?)", (lead_id, secrets.token_urlsafe(24), destination, now(), now()))
+        return self.get_review_qr(lead_id)
+
+    def review_redirect(self, token):
+        with db() as con:
+            row = con.execute("SELECT destination FROM review_qr WHERE token=?", (token,)).fetchone()
+            if not row: raise ApiError("QR Code não encontrado", 404)
+            con.execute("UPDATE review_qr SET scans=scans+1 WHERE token=?", (token,))
+        return self.redirect(row[0])
+
+    def review_qr_svg(self, lead_id):
+        with db() as con:
+            row = con.execute("SELECT token FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone()
+            if not row: raise ApiError("Configure o destino do QR Code", 404)
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
+        public_host = self.headers.get("Host", "")
+        if not re.fullmatch(r"[a-zA-Z0-9.-]+(?::\d{1,5})?", public_host): raise ApiError("Endereço inválido", 400)
+        scheme = "https" if os.environ.get("VERCEL") or COOKIE_SECURE else "http"
+        img = qrcode.make(f"{scheme}://{public_host}/r/{row[0]}", image_factory=SvgPathImage, box_size=8, border=4)
+        return self.send(img.to_string(), content_type="image/svg+xml; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="avaliacoes-qr.svg"', "Cache-Control": "no-store"})
 
     def lead_detail(self, lead_id):
         with db() as con:

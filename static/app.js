@@ -1,12 +1,12 @@
 const root = document.getElementById('app');
-const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), user: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, batchId: null, importPoll: null };
+const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, batchId: null, importPoll: null, localPoll: null, localLeadId: null, localTab: 'radar', localData: null, localSearch: '' };
 const stages = [['novo','Novo'],['pesquisado','Pesquisado'],['qualificado','Qualificado'],['contato','Contato iniciado'],['respondeu','Respondeu'],['reuniao','Reunião'],['proposta','Proposta'],['negociacao','Negociação'],['ganho','Ganho'],['perdido','Perdido']];
 const importStatus = {queued:'Na fila',running:'Pesquisando',paused:'Pausado',done:'Concluído',pending:'Aguardando',processing:'Pesquisando',error:'Falhou',skipped:'Ignorado'};
 const statuses = [['incerto','Incerto'],['sem_site_identificado','Sem site identificado'],['apenas_redes','Apenas redes sociais'],['site_sem_loja','Site sem loja'],['marketplace','Marketplace'],['loja_virtual','Loja virtual']];
 const nav = [
   ['painel','◫','Painel'],['buscar','⌕','Procurar Clientes'],['importar','⇧','Importar JSON'],['leads','▤','Meus Leads'],['listas','▦','Listas'],
-  ['crm','◇','CRM'],['nichos','◎','Explorar Nichos'],['mensagens','✧','Mensagens'],['historico','◷','Histórico'],
-  ['exportacoes','⇩','Exportações'],['analytics','▥','Analytics'],['integracoes','⬡','Integrações'],['configuracoes','⚙','Configurações'],['acessos','⌘','Acessos']
+  ['crm','◇','CRM'],['nichos','◎','Explorar Nichos'],['local','▣','Inteligência Local'],['mensagens','✧','Mensagens'],['historico','◷','Histórico'],
+  ['exportacoes','⇩','Exportações'],['analytics','▥','Analytics'],['integracoes','⬡','Integrações'],['configuracoes','⚙','Configurações']
 ];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const label = (items, value) => items.find(x => x[0] === value)?.[1] || value || 'Não informado';
@@ -42,27 +42,24 @@ function renderUnavailable(message) {
   root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Painel indisponível</h1><p class="muted">${esc(message)}</p><button class="btn primary full" onclick="location.reload()">Tentar novamente</button></section></main>`;
 }
 function renderLogin() {
-  root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Verificação de acesso</h1><p class="muted">Digite o token enviado pelo administrador no seu WhatsApp.</p><form id="access-verify-form"><label class="field">Token de acesso<input name="code" inputmode="text" autocomplete="one-time-code" spellcheck="false" maxlength="14" required placeholder="XXXX-XXXX-XXXX"></label><button class="btn primary full">Acessar ferramenta →</button><div id="login-error" class="muted" role="alert"></div></form></section></main>`;
-}
-
-function renderPasswordLogin(){
-  root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Acesso local</h1><form id="login-form"><label class="field">E-mail<input name="email" type="email" autocomplete="username" required></label><label class="field">Senha<input name="password" type="password" autocomplete="current-password" required></label><button class="btn primary full">Entrar</button><div id="login-error" class="muted" role="alert"></div></form><button class="btn ghost full" type="button" data-action="back-access">Usar token do WhatsApp</button></section></main>`;
+  root.innerHTML=`<main class="auth"><section class="auth-card"><div class="brand">CRM<span>•</span>ECOM</div><h1>Entrar no CRM</h1><p class="muted">Digite seu e-mail e sua senha.</p><form id="login-form"><label class="field">E-mail<input name="email" type="email" autocomplete="username" required></label><label class="field">Senha<input name="password" type="password" autocomplete="current-password" required></label><button class="btn primary full">Entrar →</button><div id="login-error" class="muted" role="alert"></div></form></section></main>`;
 }
 
 function shell() {
-  const n = nav.filter(([id])=>state.user.role==='admin'||!['configuracoes','acessos'].includes(id)).map(([id,icon,text],idx)=>`${idx===0||idx===6||idx===11?`<div class="nav-group">${idx===0?'Operação':idx===6?'Inteligência':'Ferramentas'}</div>`:''}<button title="${esc(text)}" aria-label="${esc(text)}" class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span class="nav-label">${text}</span></button>`).join('');
-  root.innerHTML=`<div class="scrim" id="scrim"></div><div class="shell"><aside class="sidebar ${state.sidebarCollapsed?'collapsed':''}" id="sidebar"><div class="sidebar-head"><div class="logo">C</div><div class="brand">CRM<span>•</span>ECOM</div><button class="sidebar-collapse" data-action="toggle-sidebar" type="button" aria-label="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}" aria-expanded="${!state.sidebarCollapsed}" title="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}">${state.sidebarCollapsed?'›':'‹'}</button></div><nav class="nav">${n}</nav><div class="sidebar-foot"><div class="sidebar-user">Operador<br><strong>${esc(state.user.email)}</strong></div>${state.user.sso?'':'<button class="btn ghost full" data-action="logout">Sair da conta</button>'}</div></aside><div class="main ${state.sidebarCollapsed?'sidebar-is-collapsed':''}"><header class="topbar"><button class="mobile-toggle" data-action="menu" aria-label="Abrir menu">☰</button><div class="topbar-title"><h1 id="top-title">Painel</h1><small id="top-subtitle">Resumo da sua prospecção</small></div><span class="topbar-badge ${state.user.apify&&state.user.firecrawl?'':'offline'}">${state.user.apify&&state.user.firecrawl?'● Integrações prontas':'● Configuração parcial'}</span></header><main class="page" id="content"></main></div></div><div id="drawer-mount"></div>`;
+  const n = nav.map(([id,icon,text],idx)=>`${idx===0||idx===6||idx===12?`<div class="nav-group">${idx===0?'Operação':idx===6?'Inteligência':'Ferramentas'}</div>`:''}<button title="${esc(text)}" aria-label="${esc(text)}" class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span class="nav-label">${text}</span></button>`).join('');
+  root.innerHTML=`<div class="scrim" id="scrim"></div><div class="shell"><aside class="sidebar ${state.sidebarCollapsed?'collapsed':''}" id="sidebar"><div class="sidebar-head"><div class="logo">C</div><div class="brand">CRM<span>•</span>ECOM</div><button class="sidebar-collapse" data-action="toggle-sidebar" type="button" aria-label="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}" aria-expanded="${!state.sidebarCollapsed}" title="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}">${state.sidebarCollapsed?'›':'‹'}</button></div><nav class="nav">${n}</nav><div class="sidebar-foot"><div class="sidebar-user"><strong>Gean Fernandes</strong></div>${state.user.sso?'':'<button class="btn ghost full" data-action="logout">Sair da conta</button>'}</div></aside><div class="main ${state.sidebarCollapsed?'sidebar-is-collapsed':''}"><header class="topbar"><button class="mobile-toggle" data-action="menu" aria-label="Abrir menu">☰</button><div class="topbar-title"><h1 id="top-title">Painel</h1><small id="top-subtitle">Resumo da sua prospecção</small></div></header><main class="page" id="content"></main></div></div><div id="drawer-mount"></div>`;
 }
 function title(name, sub) { document.getElementById('top-title').textContent=name;document.getElementById('top-subtitle').textContent=sub; }
 async function renderView() {
   if (!state.user) return;
   clearTimeout(state.importPoll);
+  clearTimeout(state.localPoll);
   state.view=getView();
-  if (!nav.some(x=>x[0]===state.view) || (state.user.role!=='admin' && ['configuracoes','acessos'].includes(state.view))) state.view='painel';
+  if (!nav.some(x=>x[0]===state.view)) state.view='painel';
   shell();loading();
   const selected=document.querySelector(`.nav-link[data-view="${state.view}"]`);selected?.classList.add('active');
   try {
-    ({painel:dashboard,buscar:searchPage,importar:importPage,leads:leadsPage,listas:listsPage,crm:crmPage,nichos:nichesPage,mensagens:messagesPage,historico:historyPage,exportacoes:exportPage,analytics:analyticsPage,integracoes:integrationsPage,configuracoes:settingsPage,acessos:accessPage})[state.view]();
+    ({painel:dashboard,buscar:searchPage,importar:importPage,leads:leadsPage,listas:listsPage,crm:crmPage,nichos:nichesPage,local:localPage,mensagens:messagesPage,historico:historyPage,exportacoes:exportPage,analytics:analyticsPage,integracoes:integrationsPage,configuracoes:settingsPage})[state.view]();
   } catch(err) { failure(err); }
 }
 function metric(name,value){return `<div class="metric"><div class="metric-label">${esc(name)}</div><div class="metric-value">${esc(value)}</div></div>`}
@@ -123,6 +120,80 @@ async function loadLeads(){
 }
 function leadCard(l){return `<article class="lead-card"><div class="lead-title"><div><h3>${esc(l.name)}</h3><small>${esc(l.category||'Segmento não informado')} · ${esc([l.city,l.state].filter(Boolean).join(', ')||'Local não informado')}</small></div><span class="score">${l.score}</span></div><div class="lead-meta"><span>☎ ${esc(l.phone||'Sem telefone')}</span><span>★ ${esc(l.rating??'—')} · ${esc(l.reviews_count??'—')} avaliações</span></div><div class="pill-row">${statusBadge(l.digital_status)}<span class="badge dim">${esc(label(stages,l.stage))}</span></div><div class="lead-actions"><button class="btn" data-lead="${l.id}">Ver detalhes</button><button class="btn" data-find-instagram="${l.id}">⌕ Instagram</button>${l.whatsapp?`<button class="btn" data-compose="${l.id}">◉ WhatsApp</button>`:''}<button class="btn" data-call="${l.id}" ${l.phone?'':'disabled'}>☎ Ligar</button></div></article>`}
 
+const localModules = [
+  ['radar','⌕','Radar de Leads','Busque empresas por nicho e cidade na Apify ou importe um JSON.'],
+  ['perfil','◎','Raio-X do Perfil','Confira o que os dados salvos mostram sobre cada empresa.'],
+  ['regiao','◫','Raio-X Local','Compare reputação com negócios da mesma categoria e cidade no CRM.'],
+  ['mapa','▦','Mapa de Posição','Registre nove medições reais de presença no Google.'],
+  ['proposta','✧','Proposta Relâmpago','Monte um texto comercial editável com os dados do lead.'],
+  ['contrato','▤','Contrato Express','Prepare os dados de contratação para revisão antes do envio.'],
+  ['esteira','◇','Esteira e CRM','Abra o funil e acompanhe as negociações.'],
+  ['qr','▣','QR Codes','Crie um QR de avaliações com destino editável e contagem de acessos.']
+];
+async function localPage(){
+  title('Inteligência Local','Da descoberta ao atendimento de empresas locais.');
+  const el=document.getElementById('content');
+  el.innerHTML=`<div class="section-title"><div><h1>Operação local</h1><p>Escolha uma ferramenta e trabalhe com os leads salvos no CRM.</p></div></div><div class="local-modules">${localModules.map(([id,icon,name,description])=>`<button type="button" class="local-module ${state.localTab===id?'active':''}" data-local-tab="${id}"><span class="local-icon">${icon}</span><strong>${name}</strong><small>${description}</small></button>`).join('')}</div><section class="panel" id="local-panel"><div class="empty">Carregando...</div></section>`;
+  try{
+    const x=await api('/local/summary?q='+encodeURIComponent(state.localSearch));if(state.view!=='local')return;
+    state.localItems=x.items;
+    if(!x.items.some(l=>l.id===state.localLeadId))state.localLeadId=x.items[0]?.id||null;
+    await renderLocalModule();
+  }catch(e){failure(e)}
+}
+async function renderLocalModule(){
+  document.querySelectorAll('.local-module').forEach(b=>b.classList.toggle('active',b.dataset.localTab===state.localTab));
+  const panel=document.getElementById('local-panel');if(!panel)return;
+  const tab=state.localTab;
+  if(tab==='radar'){panel.innerHTML=`<h2>Radar de Leads</h2><p class="help">A busca existente usa Apify para descobrir empresas por nicho e cidade. Os resultados são salvos no Supabase e podem ser investigados com Firecrawl. Filtre depois em Meus Leads.</p><div class="button-row"><button class="btn primary" data-view="buscar">Buscar por cidade e nicho →</button><button class="btn" data-view="importar">Importar JSON da Apify</button><button class="btn" data-view="leads">Filtrar meus leads</button></div>`;return}
+  if(tab==='esteira'){panel.innerHTML=`<h2>Esteira de Clientes e CRM</h2><p class="help">Mova empresas entre as etapas do pipeline e registre propostas, conversas e próximos passos no detalhe do lead.</p><div class="button-row"><button class="btn primary" data-view="crm">Abrir esteira →</button><button class="btn" data-view="leads">Banco de leads</button></div>`;return}
+  const search=`<form id="local-search-form" class="button-row" style="margin:12px 0"><input class="input" name="q" aria-label="Pesquisar empresa" placeholder="Buscar nome, cidade ou nicho" value="${esc(state.localSearch)}"><button class="btn">Pesquisar</button></form><p class="help">Exibindo até 100 empresas por pesquisa. Digite o nome para localizar outras.</p>`;
+  if(!state.localItems?.length){panel.innerHTML=search+'<div class="empty"><strong>Nenhuma empresa encontrada.</strong> Tente outro nome ou busque novos leads.</div>';return}
+  const chosen=state.localLeadId;
+  panel.innerHTML=`<div class="panel-head"><h2>${esc(localModules.find(x=>x[0]===tab)?.[2])}</h2><button class="link" data-lead="${chosen}">Abrir ficha completa →</button></div>${search}<label class="field local-selector">Empresa<select id="local-lead-select">${state.localItems.map(l=>`<option value="${l.id}" ${l.id===chosen?'selected':''}>${esc(l.name)} · ${esc([l.city,l.state].filter(Boolean).join(', '))}</option>`).join('')}</select></label><div id="local-details">Carregando dados...</div>`;
+  clearTimeout(state.localPoll);
+  try{const data=await api('/leads/'+chosen+'/local');if(state.view!=='local'||state.localLeadId!==chosen||state.localTab!==tab)return;state.localData=data;document.getElementById('local-details').innerHTML=localDetails(data,tab);
+    if(tab==='proposta'||tab==='contrato'){
+      const kind=tab==='proposta'?'proposal':'contract';
+      const saved=await api(`/leads/${chosen}/local-document/${kind}`);
+      if(state.view==='local'&&state.localLeadId===chosen&&state.localTab===tab&&saved.body){document.getElementById('local-document').value=saved.body;document.getElementById('local-document-saved').textContent='Salvo no CRM em '+date(saved.created_at);document.getElementById('local-pdf').hidden=false}
+    }
+    const job=data.jobs?.find(j=>j.kind===(tab==='perfil'?'profile':'grid'));
+    if((tab==='perfil'||tab==='mapa')&&job&&['queued','running'].includes(job.status))state.localPoll=setTimeout(async()=>{if(state.view!=='local'||state.localLeadId!==chosen||state.localTab!==tab)return;try{await post(`/leads/${chosen}/local/${job.kind}/advance`);await renderLocalModule()}catch(e){toast(e.message,true)}},3000);
+  }catch(e){const el=document.getElementById('local-details');if(el)el.textContent=e.message}
+}
+const localJobInfo=(data,kind)=>{const job=data.jobs?.find(j=>j.kind===kind);return job?`<p class="help">Coleta Apify: ${esc(({queued:'na fila',running:'em andamento',done:'concluída',failed:'falhou'})[job.status]||job.status)} · ${date(job.updated_at)} ${job.error?`<span style="color:var(--red)">${esc(job.error)}</span>`:''}</p>`:''};
+function localDetails(data,tab){
+  const l=data.lead;
+  if(tab==='perfil'){
+    const items=[['Nome',l.name],['Categoria',l.category],['Cidade e UF',[l.city,l.state].filter(Boolean).join(', ')],['Endereço',l.address],['Telefone',l.phone],['Perfil no Maps',l.maps_url],['Site informado',l.website],['Instagram',l.instagram],['Nota pública importada',l.rating==null?'':l.rating],['Avaliações importadas',l.reviews_count==null?'':l.reviews_count]];
+    const p=data.profile;
+    return `<div class="notice">Raio-X do perfil com dados importados e, quando você aciona a coleta, uma amostra de até 10 avaliações do Maps. A amostra não representa o histórico inteiro da empresa.</div><div class="local-facts">${items.map(([name,value])=>`<div class="local-fact"><small>${esc(name)}</small><strong>${esc(value==null||value===''?'Não informado':value)}</strong></div>`).join('')}${p?[['Fotos na amostra',p.photos_sample],['Atualizações do proprietário na amostra',p.updates_sample],['Avaliações consultadas',p.review_sample],['Respostas observadas',p.answered_sample]].map(([k,v])=>`<div class="local-fact"><small>${esc(k)}</small><strong>${esc(v)}</strong></div>`).join(''):''}</div><p class="help">Presença digital: ${esc(label(statuses,l.digital_status))} · Score de oportunidade do CRM: ${esc(l.score)}. Esse score não é nota oficial do Google. ${p?'Amostra coletada em '+date(p.collected_at):''}</p><div class="button-row"><button class="btn primary" data-local-run="profile" ${!state.user.apify?'disabled':''}>Atualizar perfil pela Apify</button><button class="btn" data-enrich="${l.id}">Pesquisar presença com Firecrawl</button></div><p class="help">A consulta Apify tem cobrança própria; o valor depende do seu plano.</p>${localJobInfo(data,'profile')}`;
+  }
+  if(tab==='regiao'){
+    const peers=[...(l.rating==null?[]:[l]),...data.peers].sort((a,b)=>(Number(b.rating)||0)-(Number(a.rating)||0)||(Number(b.reviews_count)||0)-(Number(a.reviews_count)||0));
+    const position=peers.findIndex(p=>p.id===l.id);
+    return `<div class="notice">Comparação interna de nota e quantidade de avaliações importadas; não representa o ranking nas buscas do Google. Só inclui negócios já salvos da mesma categoria, cidade e UF.</div><div class="metrics">${metric('Empresas com nota',peers.length)}${metric('Posição por avaliação',position>=0?`${position+1}º de ${peers.length}`:'Sem nota')}${metric('Média dos concorrentes',data.peers.length?(data.peers.reduce((sum,p)=>sum+Number(p.rating||0),0)/data.peers.length).toFixed(1):'—')}</div>${peers.length?`<div class="local-table"><div class="local-table-head"><span>Empresa</span><span>Nota</span><span>Avaliações</span></div>${peers.map((p,i)=>`<div class="local-table-row ${p.id===l.id?'local-current':''}"><span>${i+1}. ${esc(p.name)}${p.id===l.id?' (selecionada)':''}</span><span>${esc(p.rating)}</span><span>${esc(p.reviews_count??'—')}</span></div>`).join('')}</div>`:'<div class="empty">Sem notas importadas nesta localidade. Importe mais empresas para comparar.</div>'}<div class="button-row" style="margin-top:14px"><button class="btn primary" data-local-peers="1" ${l.category&&l.city&&l.state?'':'disabled'}>Buscar mais empresas desta região</button></div>`;
+  }
+  if(tab==='mapa'){
+    const cells=data.grid?.cells||Array(9).fill(null);
+    return `<div class="notice">Meça nove pontos reais com a Apify (ator de geogrid de terceiros) ou preencha os resultados observados manualmente. A medição pode ter custos na Apify.</div><form id="local-automatic-grid-form" class="form-grid"><label class="field span2">Termo pesquisado<input name="term" required maxlength="100" placeholder="Ex.: loja de roupas São Gonçalo" value="${esc(data.grid?.query||l.category||'')}"></label><button class="btn primary" ${!state.user.apify?'disabled':''}>Medir 3 × 3 com Apify</button></form>${localJobInfo(data,'grid')}${data.grid?`<h3 style="margin-top:20px">Última medição · ${esc(data.grid.source||'Manual')}</h3><p class="help">${esc(data.grid.query)} · ${date(data.grid.collected_at)}${data.grid.arp!=null?' · posição média '+esc(data.grid.arp):''}${data.grid.solv!=null?' · participação local '+esc(data.grid.solv)+'%':''}</p><div class="local-grid local-grid-result">${cells.map((rank,i)=>`<div class="local-grid-cell ${rank&&rank<=3?'good':rank&&rank<=10?'mid':'low'}"><strong>${rank?'#'+esc(rank):'—'}</strong><small>Ponto ${i+1}${data.grid.coords?.[i]?.every(v=>typeof v==='number')?' · '+data.grid.coords[i].map(v=>Number(v).toFixed(3)).join(', '):''}</small></div>`).join('')}</div>`:''}<details style="margin-top:20px"><summary>Registrar uma medição manual</summary><form id="local-grid-form" class="form-grid" style="margin-top:14px"><label class="field span2">Termo pesquisado<input name="query" required maxlength="100" value="${esc(data.grid?.query||'')}"></label><div class="local-grid span2">${cells.map((rank,i)=>`<label class="field">Ponto ${i+1}<input type="number" name="rank${i}" min="1" max="20" placeholder="Fora do top 20" value="${esc(rank??'')}"></label>`).join('')}</div><button class="btn">Salvar medição manual</button></form></details>`;
+  }
+  if(tab==='proposta'||tab==='contrato'){
+    const place=[l.city,l.state].filter(Boolean).join(', ')||'[localização a confirmar]';
+    const service=l.offer?label([['site','Site institucional'],['catalogo','Catálogo digital'],['nuvemshop','Loja Nuvemshop'],['yampi','Loja Yampi']],l.offer):'[definir serviço]';
+    const price=l.amount!=null?money(l.amount):'[definir valor]';
+    const proposal=`PROPOSTA COMERCIAL — ${l.name}\n\nEmpresa: ${l.name}\nSegmento: ${l.category||'[confirmar]'}\nLocalidade: ${place}\nContato: ${l.phone||'[confirmar]'}\n\nObjetivo: melhorar a presença digital do negócio.\nSituação observada: ${label(statuses,l.digital_status)} (revisar evidências antes de enviar).\n\nServiço: ${service}\nEntregáveis: [descrever entregáveis reais]\nPrazo de execução: [definir]\nInvestimento: ${price}\nValidade da proposta: [definir]\nPróximo passo: [combinar com o cliente]\n\nGean Fernandes · CRM ECOM`;
+    const contract=`DADOS PARA CONTRATO — RASCUNHO\n\nContratante: ${l.name}\nEndereço: ${l.address||'[confirmar]'}\nContato: ${l.phone||'[confirmar]'}\nPrestador: [nome ou razão social, documento e endereço]\n\nServiço: ${service}\nEntregáveis: [descrever e revisar]\nValor: ${price}\nForma de pagamento: [definir]\nPrazos e aprovação das entregas: [definir]\nSuporte, alterações e cancelamento: [definir com as partes]\nData e assinatura das partes: [definir]\n\nEste é um roteiro editável para preencher. Revise os dados e o texto jurídico antes de usar como contrato.`;
+    return `<div class="notice">${tab==='proposta'?'Rascunho baseado nos dados salvos. Confira o serviço, prazo e valor antes de apresentar.':'Roteiro de contratação. Preencha os termos com as partes e faça revisão jurídica antes de assinar.'}</div><label class="field">${tab==='proposta'?'Proposta editável':'Dados do contrato editáveis'}<textarea id="local-document" rows="17">${esc(tab==='proposta'?proposal:contract)}</textarea></label><p class="help" id="local-document-saved">Rascunho ainda não salvo.</p><div class="button-row" style="margin-top:12px"><button class="btn primary" data-local-save="${tab==='proposta'?'proposal':'contract'}">Salvar no CRM</button><a class="btn" id="local-pdf" href="/api/leads/${l.id}/local-document/${tab==='proposta'?'proposal':'contract'}.pdf" download hidden>Baixar PDF salvo</a><button class="btn" data-local-download="${tab}">Baixar TXT</button><button class="btn" data-local-copy="1">Copiar texto</button><button class="btn" data-lead="${l.id}">Abrir lead</button></div><p class="help" style="margin-top:12px">Salvar uma proposta move o lead para a etapa Proposta se ele estiver numa etapa anterior. O PDF apresenta o texto salvo; alterações feitas depois precisam ser salvas novamente.</p>`;
+  }
+  if(tab==='qr'){
+    const qr=data.qr;
+    return `<p class="help">Use o link de avaliações obtido do próprio perfil do Google. O QR leva a um endereço permanente deste CRM; você pode trocar o destino sem reimprimir. Cada abertura do link aumenta o contador, inclusive acessos de teste.</p><form id="local-qr-form" class="form-grid"><label class="field span2">Link HTTPS do perfil ou avaliações no Google<input name="destination" type="url" required maxlength="1000" placeholder="https://g.page/r/.../review" value="${esc(qr?.destination||'')}"></label><button class="btn primary">${qr?'Atualizar destino':'Criar QR Code'}</button></form>${qr?`<div class="local-qr-preview"><img src="/api/leads/${l.id}/review-qr.svg" alt="QR Code de avaliações de ${esc(l.name)}"><div><strong>${esc(qr.scans)} acessos registrados</strong><p class="help">Link permanente: <span class="mono">${esc(location.origin+'/r/'+qr.token)}</span><br>Atualizado em ${date(qr.updated_at)}.</p><a class="btn" href="/api/leads/${l.id}/review-qr.svg" download="avaliacoes-${l.id}.svg">Baixar QR em SVG</a></div></div>`:''}`;
+  }
+  return '';
+}
+
 async function crmPage(){
   title('CRM','Arraste os cards para mudar a etapa do lead.');
   const el=document.getElementById('content');
@@ -152,7 +223,7 @@ async function historyPage(){
 }
 async function exportPage(){
   title('Exportações','Baixe seu banco de leads em CSV.');
-  document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Exportar leads</h1><p>Arquivo CSV compatível com planilhas. Inclui a origem e a data de atualização.</p></div></div><section class="panel"><h2>Seu banco de empresas</h2><p class="help">Leads bloqueados ficam fora da exportação. Abra o arquivo apenas em local seguro: ele contém contatos comerciais e anotações de negócio.</p><button class="btn primary" data-action="export">⇩ Baixar CSV</button></section>`;
+  document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Exportar leads</h1><p>Baixe uma cópia dos contatos em CSV para suas planilhas.</p></div></div><section class="panel"><h2>Seu banco de empresas</h2><p class="help">O CSV traz os principais campos dos leads ativos; notas detalhadas e evidências continuam no Supabase. O download não remove nada do CRM.</p><button class="btn primary" data-action="export">⇩ Baixar CSV</button></section>`;
 }
 async function analyticsPage(){
   title('Analytics','Acompanhe a conversão do seu funil.');
@@ -171,19 +242,12 @@ function integrationsPage(){
 }
 function settingsPage(){
   title('Configurações','Conexões e operação da ferramenta.');
+  if(state.user.role!=='admin'){
+    document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Configurações</h1><p>Informações da sua conta e ferramentas disponíveis.</p></div></div><section class="panel"><h2>Sua conta</h2><p class="help">Conta autorizada: ${esc(state.user.email)}</p><p class="help">O administrador gerencia o prazo do acesso e as credenciais dos serviços.</p></section><section class="panel" style="margin-top:16px"><h2>Serviços disponíveis</h2><div class="button-row"><span class="badge">Apify: ${state.user.apify?'disponível':'não configurado'}</span><span class="badge">Firecrawl: ${state.user.firecrawl?'disponível':'não configurado'}</span><span class="badge">IA: ${state.user.groq?'disponível':'não configurada'}</span></div></section>`;
+    return;
+  }
   const keyForm=(service,name,configured)=>`<section class="panel"><h2>${name}</h2><span class="badge ${configured?'':'warning'}">${configured?'Configurada':'Pendente'}</span><form class="token-form" data-service="${service}" style="display:grid;gap:12px;margin-top:14px"><label class="field">Chave de API<input type="password" name="token" autocomplete="off" spellcheck="false" minlength="10" maxlength="4096" placeholder="Cole a chave aqui" required></label><button class="btn primary" type="submit">Salvar chave</button></form><p class="help" style="margin-top:12px">A chave salva não será exibida novamente. Cole uma nova para substituir a atual.</p><button class="btn ghost" data-remove-token="${service}" type="button">Remover chave salva</button></section>`;
   document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Configuração</h1><p>Conecte suas ferramentas de prospecção.</p></div></div><div class="two-col">${keyForm('apify','Apify · Google Maps',state.user.apify)}${keyForm('firecrawl','Firecrawl · pesquisa web',state.user.firecrawl)}${keyForm('groq','Groq · mensagens com IA',state.user.groq)}${state.user.resend?'<section class="panel"><h2>Resend · integração anterior</h2><p class="help">A chave de e-mail não é usada no acesso por WhatsApp. Se não precisar mais dela, você pode removê-la.</p><button class="btn ghost" data-remove-token="resend">Remover chave Resend</button></section>':''}<section class="panel"><h2>Contato e vendas</h2><p class="help">WhatsApp abre uma mensagem editada por lead. A ligação usa o número exibido para copiar ou abrir o discador; o serviço API4com continua externo. Sites e lojas são entregues por você na Nuvemshop ou Yampi.</p><div class="hr"></div><p class="help">Operador atual: ${esc(state.user.email)}.</p></section>${state.user.sso?'<section class="panel"><h2>Acesso</h2><p class="help">Seu acesso é controlado pela conta da Vercel. Gerencie membros e sessões no painel da Vercel.</p></section>':'<section class="panel"><h2>Alterar senha</h2><form id="password-form" style="display:grid;gap:12px"><label class="field">Senha atual<input type="password" name="current" autocomplete="current-password" required></label><label class="field">Nova senha (mínimo 12 caracteres)<input type="password" name="new" autocomplete="new-password" minlength="12" required></label><button class="btn primary">Salvar nova senha</button></form><p class="help" style="margin-top:12px">Após a alteração, todas as sessões são encerradas.</p></section>'}</div>`;
-}
-
-async function accessPage(){
-  title('Acessos','Colaboradores e validade de uso da ferramenta.');
-  const el=document.getElementById('content');
-  el.innerHTML='<section class="panel"><div class="empty">Carregando acessos…</div></section>';
-  try{
-    const [settings,people]=await Promise.all([api('/access/settings'),api('/access/collaborators')]);
-    const defaultEnd=new Date(Date.now()+7*86400000);const localEnd=new Date(defaultEnd.getTime()-defaultEnd.getTimezoneOffset()*60000).toISOString().slice(0,16);
-    el.innerHTML=`<div class="section-title"><div><h1>Acessos</h1><p>Cadastre o WhatsApp e defina até quando a pessoa pode usar o CRM.</p></div></div><div class="two-col"><section class="panel"><h2>Seu WhatsApp de administrador</h2><form id="access-settings-form" class="form-grid"><label class="field span2">Número com DDD<input name="admin_whatsapp" type="tel" value="${esc(settings.admin_whatsapp||'')}" placeholder="(21) 99999-9999"></label><button class="btn primary">Salvar número</button></form><button class="btn ghost" type="button" data-issue-admin="1" style="margin-top:12px" ${settings.admin_whatsapp?'':'disabled'}>Gerar meu token de administrador</button><p class="help" style="margin-top:12px">Cadastre seu número antes de liberar o domínio público. Depois, gere um token próprio para continuar administrando o CRM pelo mesmo endereço.</p></section><section class="panel"><h2>Adicionar colaborador</h2><form id="collaborator-form" class="form-grid"><label class="field span2">WhatsApp do colaborador<input name="phone" type="tel" inputmode="tel" autocomplete="off" required placeholder="(21) 99999-9999"></label><label class="field span2">Acesso válido até<input name="expires_at" type="datetime-local" value="${localEnd}" required></label><button class="btn primary">Salvar acesso</button></form><p class="help" style="margin-top:12px">A validade escolhida encerra o acesso mesmo com uma sessão aberta. O ID enviado é válido por 10 minutos.</p></section></div><section class="panel" style="margin-top:16px"><h2>Colaboradores cadastrados</h2>${people.length?people.map(p=>`<div class="row-item"><div><strong>+${esc(p.phone)}</strong><small>${p.revoked_at?'Revogado em '+date(p.revoked_at):new Date(p.expires_at)<new Date()?'Expirado':'Válido até '+date(p.expires_at)}</small></div><div class="button-row">${p.revoked_at||new Date(p.expires_at)<new Date()?'':`<button class="btn primary" data-issue-access="${p.id}">Gerar ID e enviar pelo WhatsApp</button><button class="btn danger" data-revoke-access="${p.id}">Revogar</button>`}</div></div>`).join(''):'<div class="empty">Nenhum WhatsApp cadastrado.</div>'}</section><section class="panel" style="margin-top:16px"><h2>Como funciona</h2><p class="help">Gere um token para cada colaborador autorizado. O WhatsApp abre com o texto preenchido; confirme o envio. A página de login pede apenas o token.</p><div class="hr"></div><p class="help">Para usar este domínio com colaboradores, cadastre seu número e gere seu token antes de tornar a produção pública na Vercel. Mantenha as prévias protegidas.</p></section>`;
-  }catch(e){failure(e)}
 }
 
 async function openLead(id, compose=false){
@@ -270,16 +334,18 @@ async function submitForm(form){
   if(form.classList.contains('token-form')){
     try{await post('/integrations',{service:form.dataset.service,token:obj.token});form.reset();state.user=await api('/me');settingsPage();toast('Chave salva com segurança.')}catch(e){toast(e.message,true)}return;
   }
-  if(form.id==='access-verify-form'){
-    try{await post('/access/verify',obj);state.user=await api('/me');renderView()}catch(e){document.getElementById('login-error').textContent=e.message}return;
-  }
   if(form.id==='login-form'){
     try{state.user=await post('/login',obj);state.user=await api('/me');renderView();}
     catch(e){document.getElementById('login-error').textContent=e.message}return;
   }
   try{
-    if(form.id==='access-settings-form'){await post('/access/settings',obj);toast('Configuração de acesso salva.');accessPage();return}
-    if(form.id==='collaborator-form'){await post('/access/collaborators',{phone:obj.phone,expires_at:new Date(obj.expires_at).toISOString()});toast('WhatsApp cadastrado.');accessPage();return}
+    if(form.id==='local-search-form'){state.localSearch=obj.q.trim();localPage();return}
+    if(form.id==='local-automatic-grid-form'){await post('/leads/'+state.localLeadId+'/local/grid/run',{term:obj.term});toast('Medição solicitada. Aguarde os resultados da Apify.');renderLocalModule();return}
+    if(form.id==='local-grid-form'){
+      const cells=Array.from({length:9},(_,i)=>obj['rank'+i]===''?null:Number(obj['rank'+i]));
+      await post('/leads/'+state.localLeadId+'/local',{query:obj.query,cells});toast('Medição salva no histórico da empresa.');renderLocalModule();return;
+    }
+    if(form.id==='local-qr-form'){await post('/leads/'+state.localLeadId+'/review-qr',{destination:obj.destination});toast('QR Code salvo; o endereço do QR continua o mesmo.');renderLocalModule();return}
     if(form.id==='apify-json-form'){const batch=await post('/import-apify',obj);state.batchId=batch.id;form.querySelector('[name=json]').value='';toast(`${batch.total} empresas importadas; ${batch.created} novas.`);loadImportBatches();return}
     if(form.id==='campaign-form'){await post('/campaigns',obj);toast('Busca iniciada. Acompanhe o progresso abaixo.');form.reset();loadCampaigns()}
     if(form.id==='new-lead-form'){const data=await post('/leads',obj);document.getElementById('new-lead-modal')?.remove();toast(data.created?'Lead cadastrado.':'Lead existente encontrado.');await leadsPage();openLead(data.id)}
@@ -292,16 +358,13 @@ async function submitForm(form){
 
 document.addEventListener('submit',event=>{event.preventDefault();submitForm(event.target)});
 document.addEventListener('click',async event=>{
-  const hit=event.target.closest('[data-issue-access],[data-issue-admin],[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token],[data-import-batch],[data-import-resume],[data-find-instagram],[data-instagram-confirm],[data-revoke-access]');if(!hit)return;
-  if(hit.dataset.issueAccess || hit.dataset.issueAdmin){
-    try{
-      const result=await post(hit.dataset.issueAdmin?'/access/admin/issue':'/access/collaborators/'+hit.dataset.issueAccess+'/issue');
-      const overlay=document.createElement('div');overlay.className='drawer-overlay';overlay.id='access-code-modal';
-      overlay.innerHTML=`<aside class="drawer" style="width:min(520px,100%)" role="dialog" aria-modal="true"><div class="drawer-top"><h2>Token criado</h2><button class="btn ghost" data-action="close-access-code">✕</button></div><div class="drawer-body"><div class="notice good">O token vale ${result.expires_in_seconds/60} minutos e só funciona uma vez. Clique abaixo e confirme o envio no WhatsApp.</div><a class="btn primary full" href="${esc(safeLink(result.whatsapp_url))}" target="_blank" rel="noopener noreferrer">Abrir WhatsApp e enviar token ↗</a></div></aside>`;
-      document.getElementById('access-code-modal')?.remove();document.body.append(overlay);accessPage();
-    }catch(e){toast(e.message,true)}return;
-  }
-  if(hit.dataset.revokeAccess){if(!confirm('Revogar este acesso agora?'))return;try{await api('/access/collaborators/'+hit.dataset.revokeAccess,{method:'DELETE'});toast('Acesso revogado.');accessPage()}catch(e){toast(e.message,true)}return}
+  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token],[data-import-batch],[data-import-resume],[data-find-instagram],[data-instagram-confirm],[data-local-tab],[data-local-copy],[data-local-download],[data-local-run],[data-local-save],[data-local-peers]');if(!hit)return;
+  if(hit.dataset.localPeers){const l=state.localData?.lead;if(!l)return;navigate('buscar');setTimeout(()=>{const f=document.getElementById('campaign-form');if(f){f.elements.niche.value=l.category||'';f.elements.city.value=l.city||'';f.elements.state.value=l.state||''}},0);return}
+  if(hit.dataset.localSave){try{const result=await post(`/leads/${state.localLeadId}/local-document/${hit.dataset.localSave}`,{body:document.getElementById('local-document').value});document.getElementById('local-document-saved').textContent='Salvo no CRM em '+date(result.created_at);document.getElementById('local-pdf').hidden=false;toast('Documento salvo no CRM.')}catch(e){toast(e.message,true)}return}
+  if(hit.dataset.localRun){try{hit.disabled=true;await post('/leads/'+state.localLeadId+'/local/profile/run',{});toast('Coleta solicitada. Aguarde a Apify.');renderLocalModule()}catch(e){toast(e.message,true)}finally{hit.disabled=false}return}
+  if(hit.dataset.localTab){state.localTab=hit.dataset.localTab;renderLocalModule();return}
+  if(hit.dataset.localCopy){try{await navigator.clipboard.writeText(document.getElementById('local-document').value);toast('Texto copiado.')}catch{toast('Não foi possível copiar.',true)}return}
+  if(hit.dataset.localDownload){const content=document.getElementById('local-document')?.value;if(!content)return;const blob=new Blob([content],{type:'text/plain;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=hit.dataset.localDownload+'-'+state.localLeadId+'.txt';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000);return}
   if(hit.dataset.view){navigate(hit.dataset.view);document.getElementById('sidebar')?.classList.remove('open');document.getElementById('scrim')?.classList.remove('show');return}
   if(hit.dataset.lead){openLead(Number(hit.dataset.lead));return}
   if(hit.dataset.compose){openLead(Number(hit.dataset.compose),true);return}
@@ -316,9 +379,6 @@ document.addEventListener('click',async event=>{
   if(hit.dataset.enrich){try{hit.disabled=true;await post('/leads/'+hit.dataset.enrich+'/enrich');toast('Pesquisa concluída. Confira as evidências.');openLead(Number(hit.dataset.enrich))}catch(e){toast(e.message,true)}finally{hit.disabled=false}return}
   if(hit.dataset.block){if(!confirm('Bloquear este contato e impedir novas importações pelo telefone?'))return;try{await post('/leads/'+hit.dataset.block+'/block');document.getElementById('drawer-mount').innerHTML='';toast('Contato bloqueado.');renderView()}catch(e){toast(e.message,true)}return}
   switch(hit.dataset.action){
-    case 'close-access-code':document.getElementById('access-code-modal')?.remove();break;
-    case 'back-access':renderLogin();break;
-    case 'legacy-login':renderPasswordLogin();break;
     case 'logout': try{await post('/logout');state.user=null;renderLogin()}catch(e){toast(e.message,true)}break;
     case 'toggle-sidebar':{state.sidebarCollapsed=!state.sidebarCollapsed;try{localStorage.setItem('crm-sidebar-collapsed',state.sidebarCollapsed?'1':'0')}catch{}const sidebar=document.getElementById('sidebar');sidebar.classList.toggle('collapsed',state.sidebarCollapsed);document.querySelector('.main')?.classList.toggle('sidebar-is-collapsed',state.sidebarCollapsed);hit.textContent=state.sidebarCollapsed?'›':'‹';hit.setAttribute('aria-label',state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral');hit.setAttribute('aria-expanded',String(!state.sidebarCollapsed));hit.title=hit.getAttribute('aria-label');break}
     case 'menu': document.getElementById('sidebar')?.classList.add('open');document.getElementById('scrim')?.classList.add('show');break;
@@ -364,6 +424,7 @@ document.addEventListener('click',async event=>{
   }
 });
 document.addEventListener('change',async event=>{
+  if(event.target.id==='local-lead-select'){state.localLeadId=Number(event.target.value);renderLocalModule();return}
   if(event.target.id==='lovable-kind'){const field=document.getElementById('lovable-prompt-text');if(field&&state.lead)field.value=buildLovablePrompt(state.lead,event.target.value);return}
   if(event.target.id!=='csv-file')return;
   const file=event.target.files?.[0];if(!file)return;
@@ -379,4 +440,4 @@ document.addEventListener('dragover',event=>{const col=event.target.closest('[da
 document.addEventListener('dragleave',event=>{const col=event.target.closest('[data-drop]');if(col&&!col.contains(event.relatedTarget))col.classList.remove('over')});
 document.addEventListener('drop',async event=>{const col=event.target.closest('[data-drop]');if(!col||!dragging)return;event.preventDefault();col.classList.remove('over');try{await api('/leads/'+dragging,{method:'PATCH',body:{stage:col.dataset.drop}});toast('Etapa atualizada.');crmPage()}catch(e){toast(e.message,true)}dragging=null});
 window.addEventListener('hashchange',renderView);
-(async()=>{try{state.user=await api('/me');state.view=getView();renderView()}catch(e){if(!state.user && (e.message==='Entre para continuar'||e.message.includes('Sessão expirada')))renderLogin();else renderUnavailable(e.message)}})();
+(async()=>{try{state.authConfig=await api('/auth/config');state.user=await api('/me');state.view=getView();renderView()}catch(e){if(!state.user && (e.message==='Entre para continuar'||e.message.includes('Sessão expirada')))renderLogin();else renderUnavailable(e.message)}})();
