@@ -70,7 +70,7 @@ def google_host(host):
 def bootstrap_operator(con):
     """Create the operator and allow an explicit password rotation in hosting settings."""
     operator = con.execute("SELECT id,email FROM users ORDER BY id LIMIT 1").fetchone()
-    email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+    email = (os.environ.get("ADMIN_EMAIL") or os.environ.get("CRM_ADMIN_GOOGLE_EMAIL") or "").strip().lower()
     password = os.environ.get("ADMIN_PASSWORD", "")
     if operator:
         seed = con.execute("SELECT value FROM app_settings WHERE name='admin_env_password_hash'").fetchone()

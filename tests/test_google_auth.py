@@ -81,6 +81,16 @@ class PasswordAccessTests(unittest.TestCase):
             server.init_db()
             self.assertEqual(self.request("/me").status_code, 200)
 
+    def test_existing_google_email_variable_can_seed_password_login(self):
+        other = Path(self.temp.name) / "fresh.sqlite3"
+        with patch.object(server, "DB_PATH", other), patch.dict(os.environ, {
+            "ADMIN_EMAIL": "", "CRM_ADMIN_GOOGLE_EMAIL": "pagamentocreamberry@gmail.com",
+        }):
+            server.init_db()
+            with server.db() as con:
+                owner = con.execute("SELECT email FROM users").fetchone()
+            self.assertEqual(owner[0], "pagamentocreamberry@gmail.com")
+
 
 if __name__ == "__main__":
     unittest.main()

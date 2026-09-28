@@ -2,7 +2,7 @@
 
 ## Login simples e banco dos leads
 
-O CRM usa um único login de e-mail e senha. O administrador é criado na primeira inicialização usando `ADMIN_EMAIL` e `ADMIN_PASSWORD` (mínimo de 12 caracteres) definidos **na Vercel**, nunca no código. Em **Configurações** ele pode trocar a senha. Se perdê-la, altere `ADMIN_PASSWORD` na Vercel e faça um novo deployment: o sistema redefinirá a senha e encerrará as sessões antigas. Google OAuth, Resend e códigos por WhatsApp não são necessários.
+O CRM usa um único login de e-mail e senha. O administrador é criado na primeira inicialização usando `ADMIN_EMAIL` e `ADMIN_PASSWORD` (mínimo de 12 caracteres) definidos **na Vercel**, nunca no código. Se `CRM_ADMIN_GOOGLE_EMAIL` já estiver configurada, ela também serve como e-mail inicial e você precisa adicionar apenas `ADMIN_PASSWORD`; o login não passa pelo Google. Em **Configurações** ele pode trocar a senha. Se perdê-la, altere `ADMIN_PASSWORD` na Vercel e faça um novo deployment: o sistema redefinirá a senha e encerrará as sessões antigas. Google OAuth, Resend e códigos por WhatsApp não são necessários.
 
 O banco persistente é o projeto Supabase [`crm-ecom`](https://supabase.com/dashboard/project/nhuputjibipbyxtocsac), na região de São Paulo. Importe JSON da Apify ou use as buscas do CRM: campanhas, leads, observações, listas e atividades são armazenados no mesmo PostgreSQL. No deployment Vercel, `SUPABASE_DB_URL` é obrigatória; sem ela a API retorna 503 e não grava no Turso. Os dados antigos de teste não serão migrados.
 
