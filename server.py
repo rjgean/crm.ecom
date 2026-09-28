@@ -200,6 +200,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, state TEXT, list_id INTEGER REFERENCES lead_lists(id), total INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_items(batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, PRIMARY KEY(batch_id,lead_id));
         CREATE TABLE IF NOT EXISTS review_qr(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, destination TEXT NOT NULL, scans INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS local_jobs(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, run_id TEXT, status TEXT NOT NULL DEFAULT 'queued', term TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS local_jobs_recent ON local_jobs(lead_id,kind,id DESC);
+        CREATE TABLE IF NOT EXISTS local_documents(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS local_documents_recent ON local_documents(lead_id,kind,id DESC);
         """)
         bootstrap_operator(con)
         if not os.environ.get("VERCEL"):
@@ -764,6 +768,16 @@ class Handler(BaseHTTPRequestHandler):
             if match:
                 if method == "GET": return self.local_detail(int(match[1]))
                 if method == "POST": return self.save_local_grid(int(match[1]))
+            match = re.fullmatch(r"/api/leads/(\d+)/local/(profile|grid)/run", path)
+            if match and method == "POST": return self.start_local_job(int(match[1]), match[2])
+            match = re.fullmatch(r"/api/leads/(\d+)/local/(profile|grid)/advance", path)
+            if match and method == "POST": return self.advance_local_job(int(match[1]), match[2])
+            match = re.fullmatch(r"/api/leads/(\d+)/local-document/(proposal|contract)", path)
+            if match:
+                if method == "GET": return self.get_local_document(int(match[1]),match[2])
+                if method == "POST": return self.save_local_document(int(match[1]),match[2])
+            match = re.fullmatch(r"/api/leads/(\d+)/local-document/(proposal|contract)\.pdf", path)
+            if match and method == "GET": return self.local_document_pdf(int(match[1]),match[2])
             match = re.fullmatch(r"/api/leads/(\d+)/review-qr", path)
             if match:
                 if method == "GET": return self.get_review_qr(int(match[1]))
@@ -1055,10 +1069,94 @@ class Handler(BaseHTTPRequestHandler):
             if not lead: raise ApiError("Empresa não encontrada", 404)
             peers = [dict(x) for x in con.execute("SELECT id,name,rating,reviews_count FROM leads WHERE blocked=0 AND category=? AND city=? AND state=? AND rating IS NOT NULL AND id<>? ORDER BY rating DESC,reviews_count DESC LIMIT 50", (lead["category"], lead["city"], lead["state"], lead_id))] if all(lead.get(k) for k in ("category","city","state")) else []
             grid = rowdict(con.execute("SELECT value,collected_at FROM observations WHERE lead_id=? AND kind='grid_local' ORDER BY id DESC LIMIT 1", (lead_id,)).fetchone())
+            profile = rowdict(con.execute("SELECT value,collected_at FROM observations WHERE lead_id=? AND kind='profile_audit' ORDER BY id DESC LIMIT 1", (lead_id,)).fetchone())
+            jobs = [dict(x) for x in con.execute("SELECT id,kind,status,term,error,updated_at FROM local_jobs WHERE lead_id=? ORDER BY id DESC LIMIT 8", (lead_id,))]
             qr = rowdict(con.execute("SELECT token,destination,scans,updated_at FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone())
         try: grid = {**json.loads(grid["value"]), "collected_at": grid["collected_at"]} if grid else None
         except (ValueError, TypeError): grid = None
-        return self.send({"lead": lead, "peers": peers, "grid": grid, "qr": qr})
+        try: profile = {**json.loads(profile["value"]), "collected_at": profile["collected_at"]} if profile else None
+        except (ValueError, TypeError): profile = None
+        return self.send({"lead": lead, "peers": peers, "grid": grid, "profile": profile, "jobs": jobs, "qr": qr})
+
+    def start_local_job(self, lead_id, kind):
+        if not service_key("apify"): raise ApiError("Configure a chave Apify em Configurações", 409)
+        body = self.json_body()
+        term = str(body.get("term") or "").strip()[:100] if kind == "grid" else ""
+        if kind == "grid" and not term: raise ApiError("Informe o termo pesquisado", 400)
+        with db() as con:
+            lead = con.execute("SELECT name,city,state,blocked FROM leads WHERE id=?", (lead_id,)).fetchone()
+            if not lead or lead[3]: raise ApiError("Empresa não encontrada", 404)
+            recent = con.execute("SELECT id,status,updated_at FROM local_jobs WHERE lead_id=? AND kind=? ORDER BY id DESC LIMIT 1", (lead_id,kind)).fetchone()
+            if recent and recent[1] in ("queued","running"):
+                elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(recent[2])
+                if elapsed < timedelta(minutes=45): return self.local_detail(lead_id)
+                con.execute("UPDATE local_jobs SET status='failed',error='Execução anterior demorou demais',updated_at=? WHERE id=?", (now(), recent[0]))
+            con.execute("INSERT INTO local_jobs(lead_id,kind,status,term,created_at,updated_at) VALUES(?,?,?,?,?,?)", (lead_id,kind,"queued",term,now(),now()))
+        return self.local_detail(lead_id)
+
+    def advance_local_job(self, lead_id, kind):
+        token = service_key("apify")
+        if not token: raise ApiError("Configure a chave Apify em Configurações", 409)
+        with db() as con:
+            job = rowdict(con.execute("SELECT * FROM local_jobs WHERE lead_id=? AND kind=? ORDER BY id DESC LIMIT 1", (lead_id,kind)).fetchone())
+            lead = rowdict(con.execute("SELECT id,external_id,name,city,state,address,maps_url,blocked FROM leads WHERE id=?", (lead_id,)).fetchone())
+        if not job or not lead or lead["blocked"]: raise ApiError("Medição não encontrada", 404)
+        if job["status"] in ("done","failed"): return self.local_detail(lead_id)
+        try:
+            if job["status"] == "queued":
+                with db() as con:
+                    claimed = con.execute("UPDATE local_jobs SET status='running',updated_at=? WHERE id=? AND status='queued'", (now(),job["id"])).rowcount
+                if not claimed: return self.local_detail(lead_id)
+                if kind == "profile":
+                    query = "place_id:" + lead["external_id"] if lead["external_id"] and re.fullmatch(r"[A-Za-z0-9_-]{10,150}", lead["external_id"]) else lead["name"]
+                    payload = {"searchStringsArray":[query],"locationQuery":", ".join(x for x in (lead["city"],lead["state"],"Brasil") if x),"maxCrawledPlacesPerSearch":1,"language":"pt-BR","scrapePlaceDetailPage":True,"maxReviews":10,"scrapeReviewsPersonalData":False}
+                    actor = "compass~crawler-google-places"
+                else:
+                    if not lead["city"]: raise ApiError("Informe a cidade do lead antes da medição", 400)
+                    payload = {"businessName":lead["name"],"keywords":[job["term"]],"location":", ".join(x for x in (lead["city"],lead["state"],"Brasil") if x),"gridSize":3,"radiusMiles":1}
+                    if lead["external_id"] and re.fullmatch(r"[A-Za-z0-9_-]{10,150}",lead["external_id"]): payload["placeId"] = lead["external_id"]
+                    actor = "crashlattice57~geo-grid-rank-tracker"
+                response = request_json("https://api.apify.com/v2/actors/"+actor+"/runs",token,payload)
+                with db() as con: con.execute("UPDATE local_jobs SET run_id=?,updated_at=? WHERE id=?", (response["data"]["id"],now(),job["id"]))
+            elif job["run_id"]:
+                run = request_json("https://api.apify.com/v2/actor-runs/"+urllib.parse.quote(job["run_id"])+"/",token)["data"]
+                if run["status"] in ("FAILED","ABORTED","TIMED-OUT"): raise ApiError("A coleta da Apify falhou. Consulte a execução na Apify e tente novamente.",502)
+                if run["status"] != "SUCCEEDED": return self.local_detail(lead_id)
+                dataset = urllib.parse.quote(run["defaultDatasetId"])
+                rows = request_json(f"https://api.apify.com/v2/datasets/{dataset}/items?format=json&limit=30&offset=0",token)
+                if not isinstance(rows,list): raise ApiError("Resultado da Apify inválido",502)
+                if kind == "profile":
+                    matching = [row for row in rows if isinstance(row,dict) and (row.get("placeId") == lead["external_id"] if lead["external_id"] else key(row.get("title")) == key(lead["name"]))]
+                    if not matching: raise ApiError("A Apify não encontrou um perfil com identificação correspondente ao lead. Confira o nome e o Maps.",409)
+                    item = matching[0]
+                    reviews = item.get("reviews") if isinstance(item.get("reviews"),list) else []
+                    photos = item.get("images") if isinstance(item.get("images"),list) else []
+                    updates = item.get("ownerUpdates") if isinstance(item.get("ownerUpdates"),list) else []
+                    response_count = sum(bool(r.get("responseFromOwnerText") or r.get("responseFromOwnerDate")) for r in reviews[:10] if isinstance(r,dict))
+                    snapshot = {"source":"Apify · Google Maps", "review_sample":len(reviews[:10]),"answered_sample":response_count,"photos_sample":len(photos[:10]),"updates_sample":len(updates[:10]),"rating":item.get("totalScore"),"reviews_count":item.get("reviewsCount"),"profile_url":clean_url(item.get("url")),"sample_limited":True}
+                    with db() as con:
+                        if not lead["blocked"]:
+                            con.execute("UPDATE leads SET rating=COALESCE(?,rating),reviews_count=COALESCE(?,reviews_count),updated_at=? WHERE id=?",(snapshot["rating"],snapshot["reviews_count"],now(),lead_id))
+                        add_observation(con,lead_id,"profile_audit",json.dumps(snapshot),snapshot["profile_url"])
+                else:
+                    points = [x for x in rows if isinstance(x,dict) and x.get("recordType")=="point" and x.get("keyword")==job["term"]]
+                    summary = next((x for x in rows if isinstance(x,dict) and x.get("recordType")=="summary" and x.get("keyword")==job["term"]),{})
+                    cells = [None]*9
+                    coords = [None]*9
+                    for point in points:
+                        row,col = point.get("row"),point.get("col")
+                        if type(row) is int and type(col) is int and 0<=row<3 and 0<=col<3:
+                            rank=point.get("rank")
+                            cells[row*3+col] = rank if type(rank) is int and 1<=rank<=20 else None
+                            coords[row*3+col] = [point.get("lat"),point.get("lng")]
+                    if len(points)<9: raise ApiError("A Apify não devolveu os nove pontos. Confira a execução e tente novamente.",502)
+                    snapshot={"source":"Apify · geogrid","query":job["term"],"cells":cells,"coords":coords,"arp":summary.get("arp"),"solv":summary.get("solv"),"found":summary.get("found"),"total":summary.get("total")}
+                    with db() as con: add_observation(con,lead_id,"grid_local",json.dumps(snapshot),"")
+                with db() as con: con.execute("UPDATE local_jobs SET status='done',updated_at=? WHERE id=?",(now(),job["id"]))
+        except Exception as exc:
+            message = exc.message if isinstance(exc,ApiError) else error_text(exc)
+            with db() as con: con.execute("UPDATE local_jobs SET status='failed',error=?,updated_at=? WHERE id=?",(message,now(),job["id"]))
+        return self.local_detail(lead_id)
 
     def save_local_grid(self, lead_id):
         body = self.json_body()
@@ -1070,6 +1168,58 @@ class Handler(BaseHTTPRequestHandler):
             if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone(): raise ApiError("Empresa não encontrada", 404)
             con.execute("INSERT INTO observations(lead_id,kind,value,source_url,collected_at) VALUES(?,?,?,?,?)", (lead_id, "grid_local", json.dumps({"query":query,"cells":cells}), None, now()))
         return self.local_detail(lead_id)
+
+    def get_local_document(self, lead_id, kind):
+        with db() as con:
+            if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0",(lead_id,)).fetchone(): raise ApiError("Empresa não encontrada",404)
+            row = rowdict(con.execute("SELECT id,body,created_at FROM local_documents WHERE lead_id=? AND kind=? ORDER BY id DESC LIMIT 1",(lead_id,kind)).fetchone())
+        return self.send(row or {"saved":False})
+
+    def save_local_document(self, lead_id, kind):
+        body = str(self.json_body().get("body") or "").strip()
+        if not 50 <= len(body) <= 12_000: raise ApiError("O documento deve ter de 50 a 12.000 caracteres")
+        with db() as con:
+            lead=con.execute("SELECT stage FROM leads WHERE id=? AND blocked=0",(lead_id,)).fetchone()
+            if not lead: raise ApiError("Empresa não encontrada",404)
+            con.execute("INSERT INTO local_documents(lead_id,kind,body,created_at) VALUES(?,?,?,?)",(lead_id,kind,body,now()))
+            con.execute("INSERT INTO activities(lead_id,kind,detail,created_at) VALUES(?,?,?,?)",(lead_id,"proposta" if kind=="proposal" else "nota","Rascunho de proposta salvo no CRM" if kind=="proposal" else "Rascunho de contrato salvo no CRM",now()))
+            if kind=="proposal" and lead[0] in ("novo","pesquisado","qualificado","contato","respondeu","reuniao"):
+                con.execute("UPDATE leads SET stage='proposta',updated_at=? WHERE id=?",(now(),lead_id))
+        return self.get_local_document(lead_id,kind)
+
+    def local_document_pdf(self, lead_id, kind):
+        with db() as con:
+            row=con.execute("SELECT body FROM local_documents WHERE lead_id=? AND kind=? ORDER BY id DESC LIMIT 1",(lead_id,kind)).fetchone()
+        if not row: raise ApiError("Salve o documento antes de baixar o PDF",404)
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+        output=io.BytesIO()
+        pdf=canvas.Canvas(output,pagesize=A4)
+        pdf.setTitle("Proposta CRM ECOM" if kind=="proposal" else "Rascunho para contrato CRM ECOM")
+        width,height=A4
+        y=height-65
+        pdf.setFont("Helvetica-Bold",15)
+        pdf.drawString(48,y,"PROPOSTA COMERCIAL" if kind=="proposal" else "DADOS PARA CONTRATO - RASCUNHO")
+        y-=30
+        pdf.setFont("Helvetica",10)
+        for paragraph in row[0].splitlines():
+            words=paragraph.split()
+            lines=[]
+            line=""
+            for word in words:
+                candidate=(line+" "+word).strip()
+                if stringWidth(candidate,"Helvetica",10)>width-96 and line:
+                    lines.append(line);line=word
+                else:line=candidate
+            lines.append(line)
+            for textline in lines:
+                if y<58:
+                    pdf.showPage();pdf.setFont("Helvetica",10);y=height-55
+                pdf.drawString(48,y,textline[:280]);y-=15
+            if not words:y-=5
+        pdf.save()
+        return self.send(output.getvalue(),content_type="application/pdf",headers={"Cache-Control":"no-store","Content-Disposition":f'attachment; filename="{kind}-{lead_id}.pdf"'})
 
     def get_review_qr(self, lead_id):
         with db() as con:

@@ -89,6 +89,59 @@ class CRMTests(unittest.TestCase):
         _, qr = self.request("GET", f"/leads/{lead_id}/review-qr")
         self.assertEqual(qr["scans"], 1)
 
+    def test_apify_local_profile_and_real_grid_jobs(self):
+        self.login()
+        _, lead = self.request("POST", "/leads", {"name":"Café Lua Azul", "city":"Niterói", "state":"RJ", "category":"Café"})
+        lead_id = lead["id"]
+        with patch.dict(os.environ,{"APIFY_TOKEN":"only-for-tests"}):
+            status, _ = self.request("POST",f"/leads/{lead_id}/local/profile/run",{})
+            self.assertEqual(status,200)
+            def profile_provider(url,token,payload=None,timeout=35):
+                if url.endswith("/runs"):
+                    self.assertTrue(payload["scrapePlaceDetailPage"])
+                    self.assertEqual(payload["maxReviews"],10)
+                    return {"data":{"id":"profile-test-run"}}
+                if "actor-runs" in url:return {"data":{"status":"SUCCEEDED","defaultDatasetId":"profile-dataset"}}
+                return [{"title":"Café Lua Azul","totalScore":4.6,"reviewsCount":27,"reviews":[{"responseFromOwnerText":"Obrigado!"},{}],"images":["x","y"],"ownerUpdates":[]}]
+            with patch.object(server,"request_json",side_effect=profile_provider):
+                self.request("POST",f"/leads/{lead_id}/local/profile/advance",{})
+                status,result=self.request("POST",f"/leads/{lead_id}/local/profile/advance",{})
+            self.assertEqual(status,200)
+            self.assertEqual(result["profile"]["answered_sample"],1)
+            self.assertEqual(result["lead"]["rating"],4.6)
+            status,_=self.request("POST",f"/leads/{lead_id}/local/grid/run",{"term":"café"})
+            self.assertEqual(status,200)
+            def grid_provider(url,token,payload=None,timeout=35):
+                if url.endswith("/runs"):
+                    self.assertEqual(payload["gridSize"],3)
+                    return {"data":{"id":"grid-test-run"}}
+                if "actor-runs" in url:return {"data":{"status":"SUCCEEDED","defaultDatasetId":"grid-dataset"}}
+                return [{"recordType":"point","keyword":"café","row":i//3,"col":i%3,"rank":i+1,"lat":-22.9,"lng":-43.1} for i in range(9)]+[{"recordType":"summary","keyword":"café","arp":5,"solv":62,"found":9,"total":9}]
+            with patch.object(server,"request_json",side_effect=grid_provider):
+                self.request("POST",f"/leads/{lead_id}/local/grid/advance",{})
+                status,result=self.request("POST",f"/leads/{lead_id}/local/grid/advance",{})
+            self.assertEqual(status,200)
+            self.assertEqual(result["grid"]["cells"],list(range(1,10)))
+            self.assertEqual(result["grid"]["solv"],62)
+
+    def test_proposal_and_contract_are_saved_with_pdf(self):
+        self.login()
+        _, lead=self.request("POST","/leads",{"name":"Loja Horizonte Sete","city":"Niterói","state":"RJ"})
+        lead_id=lead["id"]
+        path=f"/leads/{lead_id}/local-document/proposal"
+        self.assertEqual(self.request("POST",path,{"body":"Curto"})[0],400)
+        self.assertEqual(self.request("POST",path,{"body":"Proposta de site institucional. Valor R$ 1.500,00 e prazo de 30 dias para aprovação."},with_csrf=False)[0],403)
+        status,document=self.request("POST",path,{"body":"Proposta de site institucional. Valor R$ 1.500,00 e prazo de 30 dias para aprovação."})
+        self.assertEqual(status,200)
+        self.assertIn("R$ 1.500",document["body"])
+        _,lead_detail=self.request("GET",f"/leads/{lead_id}")
+        self.assertEqual(lead_detail["stage"],"proposta")
+        response=self.opener.open(self.base+"/api"+path+".pdf")
+        self.assertEqual(response.headers["Content-Type"],"application/pdf")
+        self.assertTrue(response.read().startswith(b"%PDF"))
+        contract="Dados para contrato: empresa Loja Horizonte Sete; serviços, preço, entregas e prazo a serem aprovados pelas partes."
+        self.assertEqual(self.request("POST",f"/leads/{lead_id}/local-document/contract",{"body":contract})[0],200)
+
     def test_groq_draft_requires_real_preview_for_ready_site_claim(self):
         self.login()
         _, lead = self.request("POST", "/leads", {"name": "Loja Aurora", "city": "Niterói", "state": "RJ", "phone": "21999998888"})
