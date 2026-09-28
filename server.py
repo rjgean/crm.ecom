@@ -528,8 +528,33 @@ def advance_campaign(campaign_id):
                 elif not lead:
                     with db() as con: con.execute("UPDATE campaigns SET status=?,updated_at=? WHERE id=? AND status='enriching'", ("partial" if c["error"] else "done", now(), campaign_id))
     except Exception as exc:
+        # Keep provider secrets and response bodies out of logs, but preserve enough
+        # metadata to diagnose failures in Vercel.
+        print(json.dumps({
+            "event": "campaign_advance_failed",
+            "campaign_id": campaign_id,
+            "phase": c.get("status"),
+            "exception": type(exc).__name__,
+            "http_status": getattr(exc, "code", None),
+        }, ensure_ascii=False), flush=True)
         with db() as con: con.execute("UPDATE campaigns SET status='failed',error=?,updated_at=? WHERE id=?", (error_text(exc), now(), campaign_id))
     with db() as con: return rowdict(con.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone())
+
+
+def resume_campaign(campaign_id):
+    with db() as con:
+        c = rowdict(con.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone())
+        if not c: raise ApiError("Campanha não encontrada", 404)
+        if c["status"] not in ("failed", "partial"):
+            return c
+        if c.get("dataset_id") or int(c.get("found") or 0) > 0:
+            status = "enriching"
+        elif c.get("apify_run_id"):
+            status = "running"
+        else:
+            status = "queued"
+        con.execute("UPDATE campaigns SET status=?,error=NULL,updated_at=? WHERE id=?", (status, now(), campaign_id))
+        return rowdict(con.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone())
 
 
 def apify_rows(value):
@@ -813,6 +838,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST" and path == "/api/campaigns": return self.create_campaign()
             match = re.fullmatch(r"/api/campaigns/(\d+)/advance", path)
             if method == "POST" and match: return self.send(advance_campaign(int(match[1])))
+            match = re.fullmatch(r"/api/campaigns/(\d+)/resume", path)
+            if method == "POST" and match: return self.send(resume_campaign(int(match[1])))
             if method == "GET" and path == "/api/lists": return self.get_lists()
             if method == "POST" and path == "/api/lists": return self.create_list()
             match = re.fullmatch(r"/api/lists/(\d+)/items", path)
