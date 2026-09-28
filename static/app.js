@@ -1,5 +1,5 @@
 const root = document.getElementById('app');
-const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), theme: (()=>{try{return localStorage.getItem('crm-theme')==='light'?'light':'dark'}catch{return 'dark'}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, batchId: null, importPoll: null, localPoll: null, localLeadId: null, localTab: 'radar', localData: null, localSearch: '', radarFilters: {city:'',niche:'',state:'',min_rating:'',max_reviews:''} };
+const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), theme: (()=>{try{return localStorage.getItem('crm-theme')==='light'?'light':'dark'}catch{return 'dark'}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, batchId: null, importPoll: null, campaignPoll: null, campaignAdvancing: false, localPoll: null, localLeadId: null, localTab: 'radar', localData: null, localSearch: '', radarFilters: {city:'',niche:'',state:'',min_rating:'',max_reviews:''} };
 document.documentElement.dataset.theme=state.theme;
 const stages = [['novo','Novo'],['pesquisado','Pesquisado'],['qualificado','Qualificado'],['contato','Contato iniciado'],['respondeu','Respondeu'],['reuniao','Reunião'],['proposta','Proposta'],['negociacao','Negociação'],['ganho','Ganho'],['perdido','Perdido']];
 const importStatus = {queued:'Na fila',running:'Pesquisando',paused:'Pausado',done:'Concluído',pending:'Aguardando',processing:'Pesquisando',error:'Falhou',skipped:'Ignorado'};
@@ -54,6 +54,8 @@ function title(name, sub) { document.getElementById('top-title').textContent=nam
 async function renderView() {
   if (!state.user) return;
   clearTimeout(state.importPoll);
+  clearTimeout(state.campaignPoll);
+  state.campaignPoll=null;
   clearTimeout(state.localPoll);
   state.view=getView();
   if (!nav.some(x=>x[0]===state.view)) state.view='painel';
@@ -100,11 +102,22 @@ async function searchPage(){
   loadCampaigns();
 }
 async function loadCampaigns(){
+  clearTimeout(state.campaignPoll);state.campaignPoll=null;
   const el=document.getElementById('campaigns');if(!el)return;
   try{const rows=await api('/campaigns');if(!document.getElementById('campaigns'))return;
     el.innerHTML=rows.length?rows.map(c=>`<div class="campaign-card"><div><strong>${esc(c.niche)} · ${esc(c.city)}, ${esc(c.state)}</strong><small>${date(c.created_at)} · limite ${c.limit_count} · encontrados ${c.found} · novos ${c.saved} · enriquecidos ${c.enriched}</small>${c.error?`<small style="color:var(--gold)">${esc(c.error)}</small>`:''}</div><span class="badge ${c.status==='failed'?'red':c.status==='done'?'':'warning'}">${esc(c.status)}</span></div>`).join(''):'<div class="empty">Nenhuma campanha ainda. Use os filtros acima para iniciar.</div>';
     const active=rows.find(c=>['queued','running','enriching'].includes(c.status));
-    if(active) setTimeout(async()=>{if(state.view!=='buscar')return;try{if(state.user.serverless)await post(`/campaigns/${active.id}/advance`,{});await loadCampaigns()}catch(e){toast(e.message,true)}},5000);
+    if(active) state.campaignPoll=setTimeout(async()=>{
+      if(state.view!=='buscar'||state.campaignAdvancing)return;
+      state.campaignAdvancing=true;
+      try{
+        if(state.user.serverless)await post(`/campaigns/${active.id}/advance`,{});
+      }catch(e){toast(e.message,true)}
+      finally{
+        state.campaignAdvancing=false;
+        if(state.view==='buscar')await loadCampaigns();
+      }
+    },5000);
   }catch(e){el.textContent=e.message}
 }
 function importPage(){
