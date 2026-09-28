@@ -199,6 +199,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS oauth_states(token_hash TEXT PRIMARY KEY, verifier TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, state TEXT, list_id INTEGER REFERENCES lead_lists(id), total INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_items(batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, PRIMARY KEY(batch_id,lead_id));
+        CREATE TABLE IF NOT EXISTS review_qr(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, destination TEXT NOT NULL, scans INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
         bootstrap_operator(con)
         if not os.environ.get("VERCEL"):
@@ -659,6 +660,8 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, method):
         path = urllib.parse.urlsplit(self.path).path
         try:
+            match = re.fullmatch(r"/r/([A-Za-z0-9_-]{24,80})", path)
+            if method == "GET" and match: return self.review_redirect(match[1])
             if method == "GET" and path in STATIC:
                 name, ctype = STATIC[path]
                 return self.send((ROOT / "static" / name).read_bytes(), content_type=ctype)
@@ -735,6 +738,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.change_password(user)
             if method == "GET" and path == "/api/dashboard": return self.dashboard()
             if method == "GET" and path == "/api/leads": return self.leads()
+            if method == "GET" and path == "/api/local/summary": return self.local_summary()
             if method == "POST" and path == "/api/leads": return self.create_lead()
             if method == "POST" and path == "/api/import": return self.import_leads()
             if method == "POST" and path == "/api/import-apify": return self.import_apify()
@@ -756,6 +760,16 @@ class Handler(BaseHTTPRequestHandler):
                 lead_id = int(match[1])
                 if method == "GET": return self.lead_detail(lead_id)
                 if method == "PATCH": return self.update_lead(lead_id)
+            match = re.fullmatch(r"/api/leads/(\d+)/local", path)
+            if match:
+                if method == "GET": return self.local_detail(int(match[1]))
+                if method == "POST": return self.save_local_grid(int(match[1]))
+            match = re.fullmatch(r"/api/leads/(\d+)/review-qr", path)
+            if match:
+                if method == "GET": return self.get_review_qr(int(match[1]))
+                if method == "POST": return self.save_review_qr(int(match[1]))
+            match = re.fullmatch(r"/api/leads/(\d+)/review-qr.svg", path)
+            if method == "GET" and match: return self.review_qr_svg(int(match[1]))
             match = re.fullmatch(r"/api/leads/(\d+)/instagram", path)
             if method == "POST" and match: return self.search_instagram(int(match[1]))
             match = re.fullmatch(r"/api/leads/(\d+)/message-draft", path)
@@ -1027,6 +1041,77 @@ class Handler(BaseHTTPRequestHandler):
             rows = [dict(x) for x in con.execute("SELECT * FROM leads WHERE " + where + " ORDER BY score DESC, id DESC LIMIT 300", params)]
         for x in rows: x["whatsapp"] = whatsapp_number(x["phone"])
         return self.send({"items": rows, "total": total})
+
+    def local_summary(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("q", [""])[0].strip()[:100]
+        with db() as con:
+            where = " AND (name LIKE ? OR city LIKE ? OR category LIKE ?)" if query else ""
+            rows = [dict(x) for x in con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,stage,digital_status,score FROM leads WHERE blocked=0" + where + " ORDER BY id DESC LIMIT 100", (["%" + query + "%"] * 3) if query else ())]
+        return self.send({"items": rows})
+
+    def local_detail(self, lead_id):
+        with db() as con:
+            lead = rowdict(con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,stage,digital_status,score FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone())
+            if not lead: raise ApiError("Empresa não encontrada", 404)
+            peers = [dict(x) for x in con.execute("SELECT id,name,rating,reviews_count FROM leads WHERE blocked=0 AND category=? AND city=? AND state=? AND rating IS NOT NULL AND id<>? ORDER BY rating DESC,reviews_count DESC LIMIT 50", (lead["category"], lead["city"], lead["state"], lead_id))] if all(lead.get(k) for k in ("category","city","state")) else []
+            grid = rowdict(con.execute("SELECT value,collected_at FROM observations WHERE lead_id=? AND kind='grid_local' ORDER BY id DESC LIMIT 1", (lead_id,)).fetchone())
+            qr = rowdict(con.execute("SELECT token,destination,scans,updated_at FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone())
+        try: grid = {**json.loads(grid["value"]), "collected_at": grid["collected_at"]} if grid else None
+        except (ValueError, TypeError): grid = None
+        return self.send({"lead": lead, "peers": peers, "grid": grid, "qr": qr})
+
+    def save_local_grid(self, lead_id):
+        body = self.json_body()
+        query = str(body.get("query") or "").strip()[:100]
+        cells = body.get("cells")
+        if not query or not isinstance(cells, list) or len(cells) != 9 or any(value is not None and (type(value) is not int or not 1 <= value <= 20) for value in cells):
+            raise ApiError("Informe o termo e nove posições de 1 a 20; deixe em branco quando não aparecer")
+        with db() as con:
+            if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone(): raise ApiError("Empresa não encontrada", 404)
+            con.execute("INSERT INTO observations(lead_id,kind,value,source_url,collected_at) VALUES(?,?,?,?,?)", (lead_id, "grid_local", json.dumps({"query":query,"cells":cells}), None, now()))
+        return self.local_detail(lead_id)
+
+    def get_review_qr(self, lead_id):
+        with db() as con:
+            if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone(): raise ApiError("Empresa não encontrada", 404)
+            row = rowdict(con.execute("SELECT token,destination,scans,updated_at FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone())
+        return self.send(row or {"configured": False})
+
+    def save_review_qr(self, lead_id):
+        destination = str(self.json_body().get("destination") or "").strip()
+        parsed = urllib.parse.urlsplit(destination)
+        host = (parsed.hostname or "").lower()
+        allowed = host in ("g.page", "maps.app.goo.gl", "google.com", "www.google.com", "search.google.com")
+        valid_path = (host == "maps.app.goo.gl" and bool(parsed.path.strip("/"))) or (host == "g.page" and parsed.path.startswith("/r/")) or (host in ("google.com", "www.google.com", "search.google.com") and (parsed.path == "/maps" or parsed.path.startswith(("/maps/", "/local/", "/search"))))
+        if len(destination) > 1000 or not allowed or not valid_path or parsed.scheme != "https" or parsed.username or parsed.password or parsed.port:
+            raise ApiError("Cole um link HTTPS do perfil ou avaliações no Google (google.com/maps, g.page/r ou maps.app.goo.gl)")
+        with db() as con:
+            if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone(): raise ApiError("Empresa não encontrada", 404)
+            row = con.execute("SELECT token FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone()
+            if row:
+                con.execute("UPDATE review_qr SET destination=?,updated_at=? WHERE lead_id=?", (destination, now(), lead_id))
+            else:
+                con.execute("INSERT INTO review_qr(lead_id,token,destination,created_at,updated_at) VALUES(?,?,?,?,?)", (lead_id, secrets.token_urlsafe(24), destination, now(), now()))
+        return self.get_review_qr(lead_id)
+
+    def review_redirect(self, token):
+        with db() as con:
+            row = con.execute("SELECT destination FROM review_qr WHERE token=?", (token,)).fetchone()
+            if not row: raise ApiError("QR Code não encontrado", 404)
+            con.execute("UPDATE review_qr SET scans=scans+1 WHERE token=?", (token,))
+        return self.redirect(row[0])
+
+    def review_qr_svg(self, lead_id):
+        with db() as con:
+            row = con.execute("SELECT token FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone()
+            if not row: raise ApiError("Configure o destino do QR Code", 404)
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
+        public_host = self.headers.get("Host", "")
+        if not re.fullmatch(r"[a-zA-Z0-9.-]+(?::\d{1,5})?", public_host): raise ApiError("Endereço inválido", 400)
+        scheme = "https" if os.environ.get("VERCEL") or COOKIE_SECURE else "http"
+        img = qrcode.make(f"{scheme}://{public_host}/r/{row[0]}", image_factory=SvgPathImage, box_size=8, border=4)
+        return self.send(img.to_string(), content_type="image/svg+xml; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="avaliacoes-qr.svg"', "Cache-Control": "no-store"})
 
     def lead_detail(self, lead_id):
         with db() as con:

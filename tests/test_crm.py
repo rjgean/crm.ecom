@@ -57,6 +57,38 @@ class CRMTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.csrf = value["csrf"]
 
+    def test_local_diagnostics_manual_grid_and_dynamic_review_qr(self):
+        self.login()
+        company = {"name":"Ateliê Sol de Outubro", "category":"Loja de roupas", "city":"Niterói", "state":"RJ", "rating":4.5, "reviews_count":27}
+        _, first = self.request("POST", "/leads", company)
+        _, second = self.request("POST", "/leads", {**company, "name":"Ateliê Lua de Outubro", "rating":4.9, "reviews_count":8})
+        lead_id = first["id"]
+        _, info = self.request("GET", f"/leads/{lead_id}/local")
+        self.assertEqual(info["lead"]["name"], company["name"])
+        self.assertIn(second["id"], [p["id"] for p in info["peers"]])
+        self.assertEqual(self.request("POST", f"/leads/{lead_id}/local", {"query":"roupas", "cells":[1]*8})[0], 400)
+        self.assertEqual(self.request("POST", f"/leads/{lead_id}/local", {"query":"roupas", "cells":[1]*9}, with_csrf=False)[0], 403)
+        status, result = self.request("POST", f"/leads/{lead_id}/local", {"query":"roupas femininas", "cells":[1,2,None,4,5,6,7,8,9]})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["grid"]["cells"][2], None)
+        self.assertEqual(self.request("POST", f"/leads/{lead_id}/review-qr", {"destination":"https://evil.example/"})[0], 400)
+        _, qr = self.request("POST", f"/leads/{lead_id}/review-qr", {"destination":"https://g.page/r/Example/review"})
+        token = qr["token"]
+        _, updated = self.request("POST", f"/leads/{lead_id}/review-qr", {"destination":"https://www.google.com/maps/place/Example"})
+        self.assertEqual(token, updated["token"])
+        image = self.opener.open(self.base + f"/api/leads/{lead_id}/review-qr.svg")
+        self.assertIn(b"<svg", image.read())
+        class StopRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, request, fp, code, msg, headers, newurl):
+                return None
+        opener = urllib.request.build_opener(StopRedirect)
+        with self.assertRaises(urllib.error.HTTPError) as redirected:
+            opener.open(self.base + "/r/" + token)
+        self.assertEqual(redirected.exception.code, 303)
+        self.assertEqual(redirected.exception.headers["Location"], "https://www.google.com/maps/place/Example")
+        _, qr = self.request("GET", f"/leads/{lead_id}/review-qr")
+        self.assertEqual(qr["scans"], 1)
+
     def test_groq_draft_requires_real_preview_for_ready_site_claim(self):
         self.login()
         _, lead = self.request("POST", "/leads", {"name": "Loja Aurora", "city": "Niterói", "state": "RJ", "phone": "21999998888"})

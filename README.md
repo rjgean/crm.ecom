@@ -61,6 +61,14 @@ As buscas da Apify e do Firecrawl são cobradas nas contas dos provedores. O lim
 
 ## Fluxo
 
+### Inteligência Local
+
+O menu **Inteligência Local** reúne oito ferramentas para operar negócios locais. Radar abre a busca Apify existente e a importação JSON; Raio-X do Perfil mostra apenas campos presentes no CRM, sem presumir que fotos ou postagens ausentes dos dados estejam ausentes no Google. Raio-X Local ordena notas e avaliações importadas de empresas da mesma categoria, cidade e UF **salvas neste CRM**. Ele não mede a posição nos resultados de pesquisa do Google.
+
+Mapa de Posição recebe nove posições de 1 a 20 anotadas manualmente para um termo e grava cada medição como observação do lead; a tela identifica que não há geogrid automático. Proposta Relâmpago e Contrato Express geram textos editáveis para cópia ou download TXT, com campos a preencher e revisão antes do envio; nenhum documento é assinado automaticamente. Esteira usa o CRM existente.
+
+Em QR Codes, cole o link de avaliações ou do perfil Google para criar um endereço permanente `/r/<token>`, imprima o SVG e altere o destino posteriormente pelo painel. A rota pública redireciona para URLs Google autorizadas e incrementa o contador de acessos (incluindo testes e prévias, sem afirmar que houve avaliação). Os códigos e suas contagens ficam em `crm.review_qr` na Supabase. Se usar outro domínio no futuro, gere um novo SVG para esse domínio. Para ter um link estável impresso, mantenha o domínio público do CRM ativo.
+
 ### Importação manual pela Apify
 
 Em **Importar JSON**, cole o array exportado do dataset da Apify (ou um objeto que contenha `items`/`data`), dê um nome à lista e informe cidade/UF padrão se esses campos não constarem no JSON. A importação aceita até 500 empresas e faz deduplicação por ID do local, telefone/nome e nome/localidade. Campos como `title`, `categoryName`, `address`, `phone`, `website`, `url`, `placeId`, `totalScore` e `reviewsCount` são mapeados para o CRM. Nenhuma chamada à Apify é feita por esse caminho.

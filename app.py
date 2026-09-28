@@ -14,7 +14,7 @@ _lock = threading.Lock()
 @app.route("/<path:path>", methods=["GET", "POST", "PATCH", "DELETE"])
 def dispatch(path):
     global _ready
-    if path.startswith("api/"):
+    if path.startswith("api/") or path.startswith("r/"):
         if not os.environ.get("SUPABASE_DB_URL"):
             return {"error": "Configure a conexão privada do Supabase na hospedagem para salvar os leads."}, 503
         if not _ready:

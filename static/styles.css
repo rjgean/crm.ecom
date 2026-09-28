@@ -17,3 +17,13 @@ html,.nav,.kanban,.drawer,.page,textarea{scrollbar-color:#397f75 #142124;scrollb
 ::-webkit-scrollbar-thumb:active{background:#aafde6}
 ::-webkit-scrollbar-corner{background:#142124}
 @media(prefers-reduced-motion:reduce){.nav,.kanban,.drawer{scroll-behavior:auto}}
+/* Operação local */
+.local-modules{display:grid;grid-template-columns:repeat(auto-fit,minmax(205px,1fr));gap:12px;margin:19px 0}
+.local-module{min-height:143px;text-align:left;padding:17px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:inherit;display:flex;flex-direction:column;gap:6px;transition:transform .18s,border-color .18s,box-shadow .18s}
+.local-module:hover{transform:translateY(-2px);border-color:var(--accent)}.local-module.active{border-color:var(--bright);box-shadow:inset 0 0 0 1px var(--accent),0 6px 22px #40d5b419}
+.local-module strong{font-size:13px}.local-module small{font-size:11px;line-height:1.45}.local-icon{color:var(--bright);font-size:21px}
+.local-selector{max-width:490px;margin:12px 0 20px}.local-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:9px;margin:16px 0}.local-fact{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px;min-width:0}.local-fact small{display:block;margin-bottom:5px}.local-fact strong{font-size:12px;overflow-wrap:anywhere}
+.local-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;max-width:510px}.local-grid .field{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:10px}.local-grid input{width:100%}
+.local-table{overflow:auto}.local-table-head,.local-table-row{display:grid;grid-template-columns:minmax(180px,1fr) 75px 95px;gap:12px;padding:11px;border-bottom:1px solid var(--line);font-size:12px}.local-table-head{font-weight:700;color:var(--muted)}.local-current{background:#21453b;color:var(--bright)}
+.local-qr-preview{display:flex;align-items:center;gap:24px;flex-wrap:wrap;margin:18px 0}.local-qr-preview img{width:210px;height:210px;background:white;padding:12px;border-radius:12px}.local-qr-preview>div{flex:1;min-width:210px}
+@media(max-width:650px){.local-modules{grid-template-columns:repeat(2,minmax(0,1fr))}.local-module{padding:12px;min-height:135px}.local-grid{gap:5px}.local-grid .field{padding:6px}}

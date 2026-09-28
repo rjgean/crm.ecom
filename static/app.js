@@ -1,11 +1,11 @@
 const root = document.getElementById('app');
-const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, batchId: null, importPoll: null };
+const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, batchId: null, importPoll: null, localLeadId: null, localTab: 'radar', localData: null, localSearch: '' };
 const stages = [['novo','Novo'],['pesquisado','Pesquisado'],['qualificado','Qualificado'],['contato','Contato iniciado'],['respondeu','Respondeu'],['reuniao','Reunião'],['proposta','Proposta'],['negociacao','Negociação'],['ganho','Ganho'],['perdido','Perdido']];
 const importStatus = {queued:'Na fila',running:'Pesquisando',paused:'Pausado',done:'Concluído',pending:'Aguardando',processing:'Pesquisando',error:'Falhou',skipped:'Ignorado'};
 const statuses = [['incerto','Incerto'],['sem_site_identificado','Sem site identificado'],['apenas_redes','Apenas redes sociais'],['site_sem_loja','Site sem loja'],['marketplace','Marketplace'],['loja_virtual','Loja virtual']];
 const nav = [
   ['painel','◫','Painel'],['buscar','⌕','Procurar Clientes'],['importar','⇧','Importar JSON'],['leads','▤','Meus Leads'],['listas','▦','Listas'],
-  ['crm','◇','CRM'],['nichos','◎','Explorar Nichos'],['mensagens','✧','Mensagens'],['historico','◷','Histórico'],
+  ['crm','◇','CRM'],['nichos','◎','Explorar Nichos'],['local','▣','Inteligência Local'],['mensagens','✧','Mensagens'],['historico','◷','Histórico'],
   ['exportacoes','⇩','Exportações'],['analytics','▥','Analytics'],['integracoes','⬡','Integrações'],['configuracoes','⚙','Configurações']
 ];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -46,7 +46,7 @@ function renderLogin() {
 }
 
 function shell() {
-  const n = nav.map(([id,icon,text],idx)=>`${idx===0||idx===6||idx===11?`<div class="nav-group">${idx===0?'Operação':idx===6?'Inteligência':'Ferramentas'}</div>`:''}<button title="${esc(text)}" aria-label="${esc(text)}" class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span class="nav-label">${text}</span></button>`).join('');
+  const n = nav.map(([id,icon,text],idx)=>`${idx===0||idx===6||idx===12?`<div class="nav-group">${idx===0?'Operação':idx===6?'Inteligência':'Ferramentas'}</div>`:''}<button title="${esc(text)}" aria-label="${esc(text)}" class="nav-link ${state.view===id?'active':''}" data-view="${id}"><span class="icon">${icon}</span><span class="nav-label">${text}</span></button>`).join('');
   root.innerHTML=`<div class="scrim" id="scrim"></div><div class="shell"><aside class="sidebar ${state.sidebarCollapsed?'collapsed':''}" id="sidebar"><div class="sidebar-head"><div class="logo">C</div><div class="brand">CRM<span>•</span>ECOM</div><button class="sidebar-collapse" data-action="toggle-sidebar" type="button" aria-label="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}" aria-expanded="${!state.sidebarCollapsed}" title="${state.sidebarCollapsed?'Expandir menu lateral':'Minimizar menu lateral'}">${state.sidebarCollapsed?'›':'‹'}</button></div><nav class="nav">${n}</nav><div class="sidebar-foot"><div class="sidebar-user"><strong>Gean Fernandes</strong></div>${state.user.sso?'':'<button class="btn ghost full" data-action="logout">Sair da conta</button>'}</div></aside><div class="main ${state.sidebarCollapsed?'sidebar-is-collapsed':''}"><header class="topbar"><button class="mobile-toggle" data-action="menu" aria-label="Abrir menu">☰</button><div class="topbar-title"><h1 id="top-title">Painel</h1><small id="top-subtitle">Resumo da sua prospecção</small></div></header><main class="page" id="content"></main></div></div><div id="drawer-mount"></div>`;
 }
 function title(name, sub) { document.getElementById('top-title').textContent=name;document.getElementById('top-subtitle').textContent=sub; }
@@ -58,7 +58,7 @@ async function renderView() {
   shell();loading();
   const selected=document.querySelector(`.nav-link[data-view="${state.view}"]`);selected?.classList.add('active');
   try {
-    ({painel:dashboard,buscar:searchPage,importar:importPage,leads:leadsPage,listas:listsPage,crm:crmPage,nichos:nichesPage,mensagens:messagesPage,historico:historyPage,exportacoes:exportPage,analytics:analyticsPage,integracoes:integrationsPage,configuracoes:settingsPage})[state.view]();
+    ({painel:dashboard,buscar:searchPage,importar:importPage,leads:leadsPage,listas:listsPage,crm:crmPage,nichos:nichesPage,local:localPage,mensagens:messagesPage,historico:historyPage,exportacoes:exportPage,analytics:analyticsPage,integracoes:integrationsPage,configuracoes:settingsPage})[state.view]();
   } catch(err) { failure(err); }
 }
 function metric(name,value){return `<div class="metric"><div class="metric-label">${esc(name)}</div><div class="metric-value">${esc(value)}</div></div>`}
@@ -118,6 +118,66 @@ async function loadLeads(){
   }catch(e){failure(e)}
 }
 function leadCard(l){return `<article class="lead-card"><div class="lead-title"><div><h3>${esc(l.name)}</h3><small>${esc(l.category||'Segmento não informado')} · ${esc([l.city,l.state].filter(Boolean).join(', ')||'Local não informado')}</small></div><span class="score">${l.score}</span></div><div class="lead-meta"><span>☎ ${esc(l.phone||'Sem telefone')}</span><span>★ ${esc(l.rating??'—')} · ${esc(l.reviews_count??'—')} avaliações</span></div><div class="pill-row">${statusBadge(l.digital_status)}<span class="badge dim">${esc(label(stages,l.stage))}</span></div><div class="lead-actions"><button class="btn" data-lead="${l.id}">Ver detalhes</button><button class="btn" data-find-instagram="${l.id}">⌕ Instagram</button>${l.whatsapp?`<button class="btn" data-compose="${l.id}">◉ WhatsApp</button>`:''}<button class="btn" data-call="${l.id}" ${l.phone?'':'disabled'}>☎ Ligar</button></div></article>`}
+
+const localModules = [
+  ['radar','⌕','Radar de Leads','Busque empresas por nicho e cidade na Apify ou importe um JSON.'],
+  ['perfil','◎','Raio-X do Perfil','Confira o que os dados salvos mostram sobre cada empresa.'],
+  ['regiao','◫','Raio-X Local','Compare reputação com negócios da mesma categoria e cidade no CRM.'],
+  ['mapa','▦','Mapa de Posição','Registre nove medições reais de presença no Google.'],
+  ['proposta','✧','Proposta Relâmpago','Monte um texto comercial editável com os dados do lead.'],
+  ['contrato','▤','Contrato Express','Prepare os dados de contratação para revisão antes do envio.'],
+  ['esteira','◇','Esteira e CRM','Abra o funil e acompanhe as negociações.'],
+  ['qr','▣','QR Codes','Crie um QR de avaliações com destino editável e contagem de acessos.']
+];
+async function localPage(){
+  title('Inteligência Local','Da descoberta ao atendimento de empresas locais.');
+  const el=document.getElementById('content');
+  el.innerHTML=`<div class="section-title"><div><h1>Operação local</h1><p>Escolha uma ferramenta e trabalhe com os leads salvos no CRM.</p></div></div><div class="local-modules">${localModules.map(([id,icon,name,description])=>`<button type="button" class="local-module ${state.localTab===id?'active':''}" data-local-tab="${id}"><span class="local-icon">${icon}</span><strong>${name}</strong><small>${description}</small></button>`).join('')}</div><section class="panel" id="local-panel"><div class="empty">Carregando...</div></section>`;
+  try{
+    const x=await api('/local/summary?q='+encodeURIComponent(state.localSearch));if(state.view!=='local')return;
+    state.localItems=x.items;
+    if(!x.items.some(l=>l.id===state.localLeadId))state.localLeadId=x.items[0]?.id||null;
+    await renderLocalModule();
+  }catch(e){failure(e)}
+}
+async function renderLocalModule(){
+  document.querySelectorAll('.local-module').forEach(b=>b.classList.toggle('active',b.dataset.localTab===state.localTab));
+  const panel=document.getElementById('local-panel');if(!panel)return;
+  const tab=state.localTab;
+  if(tab==='radar'){panel.innerHTML=`<h2>Radar de Leads</h2><p class="help">A busca existente usa Apify para descobrir empresas por nicho e cidade. Os resultados são salvos no Supabase e podem ser investigados com Firecrawl. Filtre depois em Meus Leads.</p><div class="button-row"><button class="btn primary" data-view="buscar">Buscar por cidade e nicho →</button><button class="btn" data-view="importar">Importar JSON da Apify</button><button class="btn" data-view="leads">Filtrar meus leads</button></div>`;return}
+  if(tab==='esteira'){panel.innerHTML=`<h2>Esteira de Clientes e CRM</h2><p class="help">Mova empresas entre as etapas do pipeline e registre propostas, conversas e próximos passos no detalhe do lead.</p><div class="button-row"><button class="btn primary" data-view="crm">Abrir esteira →</button><button class="btn" data-view="leads">Banco de leads</button></div>`;return}
+  const search=`<form id="local-search-form" class="button-row" style="margin:12px 0"><input class="input" name="q" aria-label="Pesquisar empresa" placeholder="Buscar nome, cidade ou nicho" value="${esc(state.localSearch)}"><button class="btn">Pesquisar</button></form><p class="help">Exibindo até 100 empresas por pesquisa. Digite o nome para localizar outras.</p>`;
+  if(!state.localItems?.length){panel.innerHTML=search+'<div class="empty"><strong>Nenhuma empresa encontrada.</strong> Tente outro nome ou busque novos leads.</div>';return}
+  const chosen=state.localLeadId;
+  panel.innerHTML=`<div class="panel-head"><h2>${esc(localModules.find(x=>x[0]===tab)?.[2])}</h2><button class="link" data-lead="${chosen}">Abrir ficha completa →</button></div>${search}<label class="field local-selector">Empresa<select id="local-lead-select">${state.localItems.map(l=>`<option value="${l.id}" ${l.id===chosen?'selected':''}>${esc(l.name)} · ${esc([l.city,l.state].filter(Boolean).join(', '))}</option>`).join('')}</select></label><div id="local-details">Carregando dados...</div>`;
+  try{const data=await api('/leads/'+chosen+'/local');if(state.view!=='local'||state.localLeadId!==chosen||state.localTab!==tab)return;state.localData=data;document.getElementById('local-details').innerHTML=localDetails(data,tab)}catch(e){const el=document.getElementById('local-details');if(el)el.textContent=e.message}
+}
+function localDetails(data,tab){
+  const l=data.lead;
+  if(tab==='perfil'){
+    const items=[['Nome',l.name],['Categoria',l.category],['Cidade e UF',[l.city,l.state].filter(Boolean).join(', ')],['Endereço',l.address],['Telefone',l.phone],['Perfil no Maps',l.maps_url],['Site informado',l.website],['Instagram',l.instagram],['Nota pública importada',l.rating==null?'':l.rating],['Avaliações importadas',l.reviews_count==null?'':l.reviews_count]];
+    return `<div class="notice">Raio-X dos campos importados ou conferidos. Fotos, postagens e respostas a avaliações ainda não são medidos por esta ferramenta; ausência de dado não comprova ausência no Google.</div><div class="local-facts">${items.map(([name,value])=>`<div class="local-fact"><small>${esc(name)}</small><strong>${esc(value||'Não informado')}</strong></div>`).join('')}</div><p class="help">Presença digital: ${esc(label(statuses,l.digital_status))} · Score de oportunidade do CRM: ${esc(l.score)}. Esse score não é nota oficial do Google.</p><button class="btn" data-enrich="${l.id}">Atualizar pesquisa Firecrawl</button>`;
+  }
+  if(tab==='regiao'){
+    const peers=[...(l.rating==null?[]:[l]),...data.peers].sort((a,b)=>(Number(b.rating)||0)-(Number(a.rating)||0)||(Number(b.reviews_count)||0)-(Number(a.reviews_count)||0));
+    return `<div class="notice">Comparação interna de nota e quantidade de avaliações importadas; não representa o ranking nas buscas do Google. Só inclui negócios já salvos da mesma categoria, cidade e UF.</div>${peers.length?`<div class="local-table"><div class="local-table-head"><span>Empresa</span><span>Nota</span><span>Avaliações</span></div>${peers.map((p,i)=>`<div class="local-table-row ${p.id===l.id?'local-current':''}"><span>${i+1}. ${esc(p.name)}${p.id===l.id?' (selecionada)':''}</span><span>${esc(p.rating)}</span><span>${esc(p.reviews_count??'—')}</span></div>`).join('')}</div>`:'<div class="empty">Sem notas importadas nesta localidade. Importe mais empresas para comparar.</div>'}`;
+  }
+  if(tab==='mapa'){
+    const cells=data.grid?.cells||Array(9).fill(null);
+    return `<div class="notice">Preencha cada posição após fazer a mesma busca em nove pontos da região. Sem integração de medição geográfica, este mapa registra resultados informados por você; não coleta ranking automaticamente.</div><form id="local-grid-form" class="form-grid"><label class="field span2">Termo pesquisado<input name="query" required maxlength="100" placeholder="Ex.: loja de roupas São Gonçalo" value="${esc(data.grid?.query||'')}"></label><div class="local-grid span2">${cells.map((rank,i)=>`<label class="field">Ponto ${i+1}<input type="number" name="rank${i}" min="1" max="20" placeholder="Fora do top 20" value="${esc(rank??'')}"></label>`).join('')}</div><button class="btn primary">Salvar medição</button></form><p class="help">${data.grid?'Última medição: '+date(data.grid.collected_at):'Nenhuma medição registrada.'} Compare sempre o mesmo termo, data e pontos para manter a análise consistente.</p>`;
+  }
+  if(tab==='proposta'||tab==='contrato'){
+    const place=[l.city,l.state].filter(Boolean).join(', ')||'[localização a confirmar]';
+    const proposal=`PROPOSTA COMERCIAL — ${l.name}\n\nEmpresa: ${l.name}\nSegmento: ${l.category||'[confirmar]'}\nLocalidade: ${place}\nContato: ${l.phone||'[confirmar]'}\n\nObjetivo: melhorar a presença digital do negócio.\nSituação observada: ${label(statuses,l.digital_status)} (revisar evidências antes de enviar).\n\nServiço a oferecer: [descrever entregáveis reais]\nPrazo de execução: [definir]\nInvestimento: [definir]\nValidade da proposta: [definir]\nPróximo passo: [combinar com o cliente]\n\nGean Fernandes · CRM ECOM`;
+    const contract=`DADOS PARA CONTRATO — RASCUNHO\n\nContratante: ${l.name}\nEndereço: ${l.address||'[confirmar]'}\nContato: ${l.phone||'[confirmar]'}\nPrestador: [nome ou razão social, documento e endereço]\n\nServiços e entregáveis: [descrever e revisar]\nValor e forma de pagamento: [definir]\nPrazos e aprovação das entregas: [definir]\nSuporte, alterações e cancelamento: [definir com as partes]\nData e assinatura das partes: [definir]\n\nEste é um roteiro editável para preencher. Revise os dados e o texto jurídico antes de usar como contrato.`;
+    return `<div class="notice">${tab==='proposta'?'Rascunho baseado somente nos dados salvos. Confira e ajuste antes de apresentar.':'Roteiro de contratação. Preencha os termos com as partes e faça revisão jurídica antes de assinar.'}</div><label class="field">${tab==='proposta'?'Proposta editável':'Dados do contrato editáveis'}<textarea id="local-document" rows="17">${esc(tab==='proposta'?proposal:contract)}</textarea></label><div class="button-row" style="margin-top:12px"><button class="btn primary" data-local-download="${tab}">Baixar TXT</button><button class="btn" data-local-copy="1">Copiar texto</button><button class="btn" data-lead="${l.id}">Abrir lead</button></div>`;
+  }
+  if(tab==='qr'){
+    const qr=data.qr;
+    return `<p class="help">Use o link de avaliações obtido do próprio perfil do Google. O QR leva a um endereço permanente deste CRM; você pode trocar o destino sem reimprimir. Cada abertura do link aumenta o contador, inclusive acessos de teste.</p><form id="local-qr-form" class="form-grid"><label class="field span2">Link HTTPS do perfil ou avaliações no Google<input name="destination" type="url" required maxlength="1000" placeholder="https://g.page/r/.../review" value="${esc(qr?.destination||'')}"></label><button class="btn primary">${qr?'Atualizar destino':'Criar QR Code'}</button></form>${qr?`<div class="local-qr-preview"><img src="/api/leads/${l.id}/review-qr.svg" alt="QR Code de avaliações de ${esc(l.name)}"><div><strong>${esc(qr.scans)} acessos registrados</strong><p class="help">Link permanente: <span class="mono">${esc(location.origin+'/r/'+qr.token)}</span><br>Atualizado em ${date(qr.updated_at)}.</p><a class="btn" href="/api/leads/${l.id}/review-qr.svg" download="avaliacoes-${l.id}.svg">Baixar QR em SVG</a></div></div>`:''}`;
+  }
+  return '';
+}
 
 async function crmPage(){
   title('CRM','Arraste os cards para mudar a etapa do lead.');
@@ -264,6 +324,12 @@ async function submitForm(form){
     catch(e){document.getElementById('login-error').textContent=e.message}return;
   }
   try{
+    if(form.id==='local-search-form'){state.localSearch=obj.q.trim();localPage();return}
+    if(form.id==='local-grid-form'){
+      const cells=Array.from({length:9},(_,i)=>obj['rank'+i]===''?null:Number(obj['rank'+i]));
+      await post('/leads/'+state.localLeadId+'/local',{query:obj.query,cells});toast('Medição salva no histórico da empresa.');renderLocalModule();return;
+    }
+    if(form.id==='local-qr-form'){await post('/leads/'+state.localLeadId+'/review-qr',{destination:obj.destination});toast('QR Code salvo; o endereço do QR continua o mesmo.');renderLocalModule();return}
     if(form.id==='apify-json-form'){const batch=await post('/import-apify',obj);state.batchId=batch.id;form.querySelector('[name=json]').value='';toast(`${batch.total} empresas importadas; ${batch.created} novas.`);loadImportBatches();return}
     if(form.id==='campaign-form'){await post('/campaigns',obj);toast('Busca iniciada. Acompanhe o progresso abaixo.');form.reset();loadCampaigns()}
     if(form.id==='new-lead-form'){const data=await post('/leads',obj);document.getElementById('new-lead-modal')?.remove();toast(data.created?'Lead cadastrado.':'Lead existente encontrado.');await leadsPage();openLead(data.id)}
@@ -276,7 +342,10 @@ async function submitForm(form){
 
 document.addEventListener('submit',event=>{event.preventDefault();submitForm(event.target)});
 document.addEventListener('click',async event=>{
-  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token],[data-import-batch],[data-import-resume],[data-find-instagram],[data-instagram-confirm]');if(!hit)return;
+  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-remove-token],[data-import-batch],[data-import-resume],[data-find-instagram],[data-instagram-confirm],[data-local-tab],[data-local-copy],[data-local-download]');if(!hit)return;
+  if(hit.dataset.localTab){state.localTab=hit.dataset.localTab;renderLocalModule();return}
+  if(hit.dataset.localCopy){try{await navigator.clipboard.writeText(document.getElementById('local-document').value);toast('Texto copiado.')}catch{toast('Não foi possível copiar.',true)}return}
+  if(hit.dataset.localDownload){const content=document.getElementById('local-document')?.value;if(!content)return;const blob=new Blob([content],{type:'text/plain;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=hit.dataset.localDownload+'-'+state.localLeadId+'.txt';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000);return}
   if(hit.dataset.view){navigate(hit.dataset.view);document.getElementById('sidebar')?.classList.remove('open');document.getElementById('scrim')?.classList.remove('show');return}
   if(hit.dataset.lead){openLead(Number(hit.dataset.lead));return}
   if(hit.dataset.compose){openLead(Number(hit.dataset.compose),true);return}
@@ -336,6 +405,7 @@ document.addEventListener('click',async event=>{
   }
 });
 document.addEventListener('change',async event=>{
+  if(event.target.id==='local-lead-select'){state.localLeadId=Number(event.target.value);renderLocalModule();return}
   if(event.target.id==='lovable-kind'){const field=document.getElementById('lovable-prompt-text');if(field&&state.lead)field.value=buildLovablePrompt(state.lead,event.target.value);return}
   if(event.target.id!=='csv-file')return;
   const file=event.target.files?.[0];if(!file)return;
