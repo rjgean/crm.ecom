@@ -75,6 +75,13 @@ class PWATests(unittest.TestCase):
         self.assertIn("--scroll-thumb:#397f75", styles)
         self.assertIn("[data-theme=light]{--scroll-thumb:#9aacc1;--scroll-track:#edf2f7;--scroll-border:#f4f7fb;--scroll-hover:#145bd7;--scroll-active:#0f4db9}", styles)
 
+    def test_lead_score_is_labeled_and_visible_on_mobile(self):
+        script = (ROOT / "static" / "app.js").read_text()
+        styles = (ROOT / "static" / "styles.css").read_text()
+        self.assertIn("<small>Score do lead</small>", script)
+        self.assertIn("Indicador interno para ajudar a priorizar oportunidades", script)
+        self.assertNotIn(".dash-lead-stage,.dash-lead-score,.topbar-actions form{display:none}", styles)
+
 
 if __name__ == "__main__":
     unittest.main()
