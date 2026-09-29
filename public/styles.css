@@ -39,14 +39,16 @@
 @media(max-width:950px){.sidebar-collapse{display:none}}
 
 /* Rolagem discreta com destaque ao interagir, inclusive no CRM horizontal. */
-html,.nav,.kanban,.drawer,.page,textarea{scrollbar-color:#397f75 #142124;scrollbar-width:thin}
+:root{--scroll-thumb:#397f75;--scroll-track:#142124;--scroll-border:#142124;--scroll-hover:#8ff0d5;--scroll-active:#aafde6}
+[data-theme=light]{--scroll-thumb:#9aacc1;--scroll-track:#edf2f7;--scroll-border:#f4f7fb;--scroll-hover:#145bd7;--scroll-active:#0f4db9}
+html,.nav,.kanban,.drawer,.page,textarea{scrollbar-color:var(--scroll-thumb) var(--scroll-track);scrollbar-width:thin}
 .nav,.kanban,.drawer{scroll-behavior:smooth}
 ::-webkit-scrollbar{width:9px;height:9px}
-::-webkit-scrollbar-track{background:#142124;border-radius:12px}
-::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#367b70,#4dbca8);border:2px solid #142124;border-radius:12px;min-height:28px}
-::-webkit-scrollbar-thumb:hover{background:#8ff0d5;box-shadow:0 0 9px #4dbca880}
-::-webkit-scrollbar-thumb:active{background:#aafde6}
-::-webkit-scrollbar-corner{background:#142124}
+::-webkit-scrollbar-track{background:var(--scroll-track);border-radius:12px}
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--scroll-thumb),var(--accent));border:2px solid var(--scroll-border);border-radius:12px;min-height:28px;transition:background .16s,box-shadow .16s}
+::-webkit-scrollbar-thumb:hover{background:var(--scroll-hover);box-shadow:0 0 9px color-mix(in srgb,var(--accent) 45%,transparent)}
+::-webkit-scrollbar-thumb:active{background:var(--scroll-active)}
+::-webkit-scrollbar-corner{background:var(--scroll-track)}
 @media(prefers-reduced-motion:reduce){.nav,.kanban,.drawer{scroll-behavior:auto}}
 /* Operação local */
 .local-modules{display:grid;grid-template-columns:repeat(auto-fit,minmax(205px,1fr));gap:12px;margin:19px 0}

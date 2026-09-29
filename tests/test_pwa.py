@@ -65,9 +65,15 @@ class PWATests(unittest.TestCase):
         self.assertNotIn("/api/leads", script)
 
     def test_deployed_shell_copies_stay_in_sync(self):
-        for name in ("app.js", "sw.js"):
+        for name in ("app.js", "sw.js", "styles.css"):
             with self.subTest(asset=name):
                 self.assertEqual((ROOT / "static" / name).read_bytes(), (ROOT / "public" / name).read_bytes())
+
+    def test_scrollbar_palette_follows_light_and_dark_themes(self):
+        styles = (ROOT / "static" / "styles.css").read_text()
+        self.assertIn("scrollbar-color:var(--scroll-thumb) var(--scroll-track)", styles)
+        self.assertIn("--scroll-thumb:#397f75", styles)
+        self.assertIn("[data-theme=light]{--scroll-thumb:#9aacc1;--scroll-track:#edf2f7;--scroll-border:#f4f7fb;--scroll-hover:#145bd7;--scroll-active:#0f4db9}", styles)
 
 
 if __name__ == "__main__":
