@@ -82,6 +82,11 @@ class PWATests(unittest.TestCase):
         self.assertIn("Indicador interno para ajudar a priorizar oportunidades", script)
         self.assertNotIn(".dash-lead-stage,.dash-lead-score,.topbar-actions form{display:none}", styles)
 
+    def test_lead_cards_align_metadata_and_actions(self):
+        styles = (ROOT / "static" / "styles.css").read_text()
+        self.assertIn(".lead-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))", styles)
+        self.assertIn(".lead-actions .btn{flex:1 1 108px;min-height:38px", styles)
+
 
 if __name__ == "__main__":
     unittest.main()

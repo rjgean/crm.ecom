@@ -50,6 +50,21 @@ html,.nav,.kanban,.drawer,.page,textarea{scrollbar-color:var(--scroll-thumb) var
 ::-webkit-scrollbar-thumb:active{background:var(--scroll-active)}
 ::-webkit-scrollbar-corner{background:var(--scroll-track)}
 @media(prefers-reduced-motion:reduce){.nav,.kanban,.drawer{scroll-behavior:auto}}
+
+/* Cartões de leads: alinhamento consistente de dados, pontuação e ações. */
+.lead-card{display:flex;flex-direction:column;min-width:0}
+.lead-title>div{flex:1;min-width:0}
+.lead-title h3{overflow-wrap:anywhere;line-height:1.25}
+.lead-title small{display:block;line-height:1.4}
+.lead-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:center;gap:10px 14px;margin:16px 0 14px;min-height:28px}
+.lead-meta span{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lead-meta span svg{flex:none}
+.pill-row{align-items:center;min-height:28px}
+.lead-actions{align-items:stretch;margin-top:auto}
+.lead-actions .btn{flex:1 1 108px;min-height:38px;line-height:1.2}
+.dash-lead-row{min-width:0}
+.dash-lead-info{overflow:hidden}
+@media(max-width:390px){.lead-meta{gap:8px}.lead-meta span{font-size:10px}.score{min-width:88px}}
 /* Operação local */
 .local-modules{display:grid;grid-template-columns:repeat(auto-fit,minmax(205px,1fr));gap:12px;margin:19px 0}
 .local-module{min-height:143px;text-align:left;padding:17px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:inherit;display:flex;flex-direction:column;gap:6px;transition:transform .18s,border-color .18s,box-shadow .18s}
