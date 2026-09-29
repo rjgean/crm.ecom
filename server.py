@@ -69,7 +69,7 @@ def google_host(host):
 
 def bootstrap_operator(con):
     """Create the operator and allow an explicit password rotation in hosting settings."""
-    operator = con.execute("SELECT id,email FROM users ORDER BY id LIMIT 1").fetchone()
+    operator = con.execute("SELECT id,email FROM users WHERE role='admin' ORDER BY id LIMIT 1").fetchone()
     email = (os.environ.get("ADMIN_EMAIL") or os.environ.get("CRM_ADMIN_GOOGLE_EMAIL") or "").strip().lower()
     password = os.environ.get("ADMIN_PASSWORD", "")
     if operator:
@@ -83,7 +83,7 @@ def bootstrap_operator(con):
         return
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) or len(password) < 12:
         raise RuntimeError("Configure ADMIN_EMAIL e ADMIN_PASSWORD (mínimo 12 caracteres) na hospedagem.")
-    con.execute("INSERT OR IGNORE INTO users(email,password_hash) VALUES(?,?)", (email, hash_password(password)))
+    con.execute("INSERT OR IGNORE INTO users(email,password_hash,role) VALUES(?,?,'admin')", (email, hash_password(password)))
     con.execute("INSERT OR IGNORE INTO app_settings(name,value) VALUES('admin_env_password_hash',?)", (hash_password(password),))
 
 
@@ -168,7 +168,7 @@ def init_db():
     if not turso_credentials()[0]: DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db() as con:
         con.executescript("""
-        CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'collaborator');
         CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
         CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY, niche TEXT NOT NULL, city TEXT NOT NULL, state TEXT NOT NULL, limit_count INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'queued', apify_run_id TEXT, dataset_id TEXT, found INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -214,6 +214,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS local_documents(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS local_documents_recent ON local_documents(lead_id,kind,id DESC);
         """)
+        user_columns = {row[1] for row in con.execute("PRAGMA table_info(users)")}
+        if "role" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'collaborator'")
+        con.execute("UPDATE users SET role='admin' WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) AND NOT EXISTS (SELECT 1 FROM users WHERE role='admin')")
         bootstrap_operator(con)
         if not os.environ.get("VERCEL"):
             # A thread local retoma campanhas interrompidas em reinícios do processo.
@@ -690,8 +694,8 @@ class Handler(BaseHTTPRequestHandler):
         if not token: return None
         digest = hashlib.sha256(token.encode()).hexdigest()
         with db() as con:
-            old = rowdict(con.execute("SELECT users.email,users.id,sessions.csrf FROM sessions JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
-            if old: return {**old, "role": "admin", "sso": False}
+            old = rowdict(con.execute("SELECT users.email,users.id,users.role,sessions.csrf FROM sessions JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?", (digest, now())).fetchone())
+            if old: return {**old, "sso": False}
             # Legacy tokens from the previous authentication flows have no authority.
             return None
 
@@ -734,17 +738,16 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError("Origem da requisição inválida", 403)
             if method != "GET" and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"]): raise ApiError("Sessão inválida; recarregue a página", 403)
             if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "role": user["role"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "google": bool(user.get("google")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "resend": bool(service_key("resend")), "serverless": bool(os.environ.get("VERCEL"))})
+            if path == "/api/access/collaborators":
+                if user["role"] != "admin": raise ApiError("Apenas o administrador pode gerenciar acessos", 403)
+                if method == "GET": return self.list_collaborators()
+                if method == "POST": return self.add_collaborator()
+            match = re.fullmatch(r"/api/access/collaborators/(\d+)", path)
+            if match and method == "DELETE":
+                if user["role"] != "admin": raise ApiError("Apenas o administrador pode gerenciar acessos", 403)
+                return self.revoke_collaborator(int(match[1]))
             if path.startswith("/api/access/") or path.startswith("/api/auth/google/"):
                 raise ApiError("Acesso antigo desativado", 404)
-            if path == "/api/access/google-users":
-                if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
-                if method == "GET": return self.list_google_users()
-                if method == "POST": return self.add_google_user()
-            match = re.fullmatch(r"/api/access/google-users/(\d+)", path)
-            if match and method == "DELETE":
-                if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
-                return self.revoke_google_user(int(match[1]))
-            if path.startswith("/api/access/collaborators") and user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
             if path == "/api/access/settings":
                 if user["role"] != "admin": raise ApiError("Apenas administradores podem gerenciar acessos", 403)
                 if method == "GET": return self.access_settings()
@@ -784,7 +787,7 @@ class Handler(BaseHTTPRequestHandler):
                     con.execute("DELETE FROM google_sessions WHERE token_hash=?", (digest,))
                 return self.send({"ok": True}, headers={"Set-Cookie": "crm_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
             if method == "POST" and path == "/api/change-password":
-                if user["role"] != "admin" or not user["id"]: raise ApiError("Senha não disponível para este acesso", 403)
+                if not user["id"]: raise ApiError("Senha não disponível para este acesso", 403)
                 if user.get("sso"): raise ApiError("A senha é gerenciada pela Vercel", 404)
                 return self.change_password(user)
             if method == "POST" and path == "/api/change-email":
@@ -970,7 +973,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def list_collaborators(self):
         with db() as con:
-            return self.send([dict(row) for row in con.execute("SELECT id,phone,expires_at,revoked_at,created_at FROM collaborator_phones ORDER BY id DESC LIMIT 250")])
+            return self.send([dict(row) for row in con.execute("SELECT id,email FROM users WHERE role='collaborator' ORDER BY id DESC LIMIT 250")])
 
     def access_settings(self):
         return self.send({"admin_whatsapp": admin_whatsapp()})
@@ -991,27 +994,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def add_collaborator(self):
         body = self.json_body()
-        phone = collaborator_phone(body.get("phone"))
-        if not phone: raise ApiError("Informe um celular brasileiro válido com DDD")
-        if phone == admin_whatsapp(): raise ApiError("Esse WhatsApp está reservado ao administrador")
-        try: expiry = datetime.fromisoformat(str(body.get("expires_at", "")).replace("Z", "+00:00"))
-        except ValueError: raise ApiError("Defina a data e hora de expiração")
-        if not expiry.tzinfo: raise ApiError("A expiração precisa incluir o fuso horário")
-        expiry = expiry.astimezone(timezone.utc)
-        if not timedelta(minutes=5) <= expiry - datetime.now(timezone.utc) <= timedelta(days=365):
-            raise ApiError("Defina validade entre 5 minutos e 365 dias")
+        email = str(body.get("email") or "").strip().lower()
+        password = str(body.get("password") or "")
+        if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ApiError("Informe um e-mail válido para o colaborador")
+        if not 12 <= len(password) <= 200:
+            raise ApiError("A senha inicial precisa ter entre 12 e 200 caracteres")
         with db() as con:
-            con.execute("INSERT INTO collaborator_phones(phone,expires_at,revoked_at,created_at) VALUES(?,?,NULL,?) ON CONFLICT(phone) DO UPDATE SET expires_at=excluded.expires_at,revoked_at=NULL", (phone, expiry.isoformat(timespec="seconds"), now()))
-        return self.send({"ok": True}, 201)
+            result = con.execute("INSERT INTO users(email,password_hash,role) VALUES(?,?,'collaborator') ON CONFLICT(email) DO NOTHING", (email, hash_password(password)))
+            if not result.rowcount: raise ApiError("Já existe uma conta com esse e-mail", 409)
+            user_id = result.lastrowid
+        return self.send({"id": user_id, "email": email}, 201)
 
     def revoke_collaborator(self, identifier):
         with db() as con:
-            row = con.execute("SELECT phone FROM collaborator_phones WHERE id=?", (identifier,)).fetchone()
+            row = con.execute("SELECT role FROM users WHERE id=?", (identifier,)).fetchone()
             if not row: raise ApiError("Acesso não encontrado", 404)
-            con.execute("UPDATE collaborator_phones SET revoked_at=? WHERE id=?", (now(), identifier))
-            con.execute("DELETE FROM phone_sessions WHERE phone=?", (row[0],))
-            con.execute("DELETE FROM phone_challenges WHERE phone=?", (row[0],))
-            con.execute("DELETE FROM phone_access_requests WHERE phone=?", (row[0],))
+            if row[0] != "collaborator": raise ApiError("O acesso do administrador não pode ser removido", 403)
+            con.execute("DELETE FROM sessions WHERE user_id=?", (identifier,))
+            con.execute("DELETE FROM users WHERE id=?", (identifier,))
         return self.send({"ok": True})
 
     def issue_access(self, identifier):

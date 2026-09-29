@@ -1,6 +1,7 @@
 import http.cookiejar
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -74,6 +75,56 @@ class CRMTests(unittest.TestCase):
             nonce = b"0123456789ab"
             encrypted = cipher.encrypt(nonce, b"test-secret", b"apify")
             self.assertEqual(cipher.decrypt(nonce, encrypted, b"apify"), b"test-secret")
+
+    def test_existing_database_migrates_first_user_to_admin(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "legacy.sqlite3"
+            with sqlite3.connect(path) as con:
+                con.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL)")
+                con.execute("INSERT INTO users(email,password_hash) VALUES(?,?)", ("legacy-admin@example.test", server.hash_password("LegacyPassword123!")))
+            with patch.object(server, "DB_PATH", path):
+                server.init_db()
+                with server.db() as con:
+                    user = con.execute("SELECT email,role FROM users").fetchone()
+                self.assertEqual(tuple(user), ("legacy-admin@example.test", "admin"))
+
+    def test_admin_can_create_collaborator_and_collaborator_can_only_manage_own_password(self):
+        self.login()
+        email = "daily.collaborator@example.test"
+        password = "InitialCollaboratorPass123!"
+        status, created = self.request("POST", "/access/collaborators", {"email": email, "password": password})
+        self.assertEqual(status, 201)
+        self.assertTrue(created["id"])
+        self.assertNotIn("password", created)
+        status, users = self.request("GET", "/access/collaborators")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(user["email"] == email for user in users))
+        self.assertEqual(self.request("POST", "/access/collaborators", {"email": email, "password": password})[0], 409)
+        self.assertEqual(self.request("POST", "/logout")[0], 200)
+        self.csrf = ""
+
+        status, login = self.request("POST", "/login", {"email": email, "password": password})
+        self.assertEqual(status, 200)
+        self.csrf = login["csrf"]
+        _, profile = self.request("GET", "/me")
+        self.assertEqual(profile["role"], "collaborator")
+        self.assertEqual(self.request("GET", "/dashboard")[0], 200)
+        self.assertEqual(self.request("GET", "/access/collaborators")[0], 403)
+        self.assertEqual(self.request("POST", "/integrations", {"service": "apify", "token": "test-api-key-value"})[0], 403)
+        self.assertEqual(self.request("POST", "/change-password", {"current": "wrong", "new": "NewCollaboratorPass456!"})[0], 403)
+        self.assertEqual(self.request("POST", "/change-password", {"current": password, "new": "NewCollaboratorPass456!"})[0], 200)
+        self.assertEqual(self.request("GET", "/me")[0], 401)
+        self.csrf = ""
+        self.assertEqual(self.request("POST", "/login", {"email": email, "password": password})[0], 401)
+        status, login = self.request("POST", "/login", {"email": email, "password": "NewCollaboratorPass456!"})
+        self.assertEqual(status, 200)
+        self.csrf = login["csrf"]
+        self.assertEqual(self.request("POST", "/logout")[0], 200)
+        self.csrf = ""
+
+        self.login()
+        self.assertEqual(self.request("DELETE", f"/access/collaborators/{created['id']}")[0], 200)
+        self.assertEqual(self.request("POST", "/login", {"email": email, "password": "NewCollaboratorPass456!"})[0], 401)
 
     def test_local_diagnostics_manual_grid_and_dynamic_review_qr(self):
         self.login()
