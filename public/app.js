@@ -19,7 +19,25 @@ window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();ins
 window.addEventListener('appinstalled',()=>{installPrompt=null;updateInstallButton();toast('CRM instalado na tela inicial.')});
 window.addEventListener('online',()=>document.documentElement.classList.remove('is-offline'));
 window.addEventListener('offline',()=>document.documentElement.classList.add('is-offline'));
-if('serviceWorker' in navigator && location.protocol==='https:')window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+if('serviceWorker' in navigator){
+  let hadController=Boolean(navigator.serviceWorker.controller),reloadingForUpdate=false;
+  navigator.serviceWorker.addEventListener('controllerchange',()=>{
+    if(!hadController||reloadingForUpdate)return;
+    const changed=[...document.querySelectorAll('input,select,textarea')].some(field=>{
+      if(field.type==='file')return false;
+      if(field.type==='checkbox'||field.type==='radio')return field.checked!==field.defaultChecked;
+      if(field.tagName==='SELECT'){
+        const initial=[...field.options].findIndex(option=>option.defaultSelected);
+        return field.selectedIndex!==(initial<0?0:initial);
+      }
+      return field.value!==(field.defaultValue||'');
+    });
+    if(changed){toast('Atualização pronta. Salve o formulário aberto e atualize o CRM depois.');return}
+    reloadingForUpdate=true;
+    location.reload();
+  });
+  if(location.protocol==='https:')window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+}
 if(!navigator.onLine)document.documentElement.classList.add('is-offline');
 const stages = [['novo','Novo'],['pesquisado','Pesquisado'],['qualificado','Qualificado'],['contato','Contato iniciado'],['respondeu','Respondeu'],['reuniao','Reunião'],['proposta','Proposta'],['negociacao','Negociação'],['ganho','Ganho'],['perdido','Perdido']];
 const importStatus = {queued:'Na fila',running:'Pesquisando',paused:'Pausado',done:'Concluído',pending:'Aguardando',processing:'Pesquisando',error:'Falhou',skipped:'Ignorado'};
@@ -27,7 +45,7 @@ const statuses = [['incerto','Incerto'],['sem_site_identificado','Sem site ident
 const nav = [
   ['painel','dashboard','Painel'],['buscar','search','Procurar Clientes'],['importar','upload','Importar JSON'],['leads','building','Meus Leads'],['listas','list','Listas'],
   ['crm','kanban','CRM'],['nichos','compass','Explorar Nichos'],['local','pin','Inteligência Local'],['mensagens','message','Mensagens'],['historico','clock','Histórico'],
-  ['exportacoes','download','Exportações'],['analytics','chart','Analytics'],['integracoes','plug','Integrações'],['configuracoes','settings','Configurações']
+  ['exportacoes','download','Exportações'],['analytics','chart','Análises'],['integracoes','plug','Integrações'],['configuracoes','settings','Configurações']
 ];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const label = (items, value) => items.find(x => x[0] === value)?.[1] || value || 'Não informado';
@@ -41,7 +59,7 @@ const statusBadge = value => `<span class="badge ${value === 'incerto' || value 
 async function api(path, opts={}) {
   const headers = { ...(opts.body ? {'Content-Type':'application/json'} : {}), ...(state.user?.csrf ? {'X-CSRF-Token':state.user.csrf} : {}) };
   let response;
-  try { response = await fetch('/api' + path, { credentials:'same-origin', headers, ...opts, body:opts.body ? JSON.stringify(opts.body) : undefined }); }
+  try { response = await fetch('/api' + path, { credentials:'same-origin', headers, ...opts, cache:'no-store', body:opts.body ? JSON.stringify(opts.body) : undefined }); }
   catch { throw new Error('Sem conexão com o servidor.'); }
   if (response.status === 401 && !['/login','/access/verify'].includes(path)) { state.user=null; renderLogin(); throw new Error('Sessão expirada. Entre novamente.'); }
   if (response.headers.get('Content-Type')?.includes('text/csv')) return response.blob();
@@ -102,7 +120,7 @@ async function renderView() {
 }
 function metric(name,value){return `<div class="metric"><div class="metric-label">${esc(name)}</div><div class="metric-value">${esc(value)}</div></div>`}
 async function dashboard(){
-  title('Dashboard','Sua operação comercial em tempo real.');
+  title('Painel','Sua operação comercial em tempo real.');
   try {
     const x=await api('/dashboard');const m=x.metrics;
     const total=Number(m.saved)||0;
@@ -121,7 +139,7 @@ async function dashboard(){
       <div class="dash-stats">${spotlight('search','Empresas encontradas',m.found,'Nas buscas realizadas','cyan')}${spotlight('building','Leads no CRM',m.saved,'Salvos no Supabase','blue')}${spotlight('profile','Sem site identificado',m.no_site,`${noSitePercent}% dos leads salvos`,'pink')}${spotlight('fileCheck','Propostas e negociações',m.proposals,'Inclui negociações e ganhos','lime')}</div>
       <div class="dash-grid"><section class="dash-panel dash-opportunities"><div class="dash-panel-heading"><div><span class="dash-kicker">OPORTUNIDADE DIGITAL</span><h2>Presença na internet</h2></div><button class="link" data-view="leads">Ver leads ↗</button></div><div class="dash-donut-layout"><div class="dash-donut" style="background:${donut}"><div><strong>${total}</strong><small>leads salvos</small></div></div><div class="dash-legend"><div><i class="legend-no-site"></i><span>Sem site identificado</span><strong>${noSite}</strong></div><div><i class="legend-site"></i><span>Com site identificado</span><strong>${withSite}</strong></div><div><i class="legend-other"></i><span>Outros / a conferir</span><strong>${other}</strong></div></div></div><p class="dash-note">“Sem site identificado” pede conferência antes da abordagem.</p></section>
       <section class="dash-panel"><div class="dash-panel-heading"><div><span class="dash-kicker">MAPA DA PROSPECÇÃO</span><h2>Onde estão os leads</h2></div><button class="link" data-view="leads">Explorar ↗</button></div><div class="dash-bars">${cityRows}</div></section>
-      <section class="dash-panel"><div class="dash-panel-heading"><div><span class="dash-kicker">EVOLUÇÃO COMERCIAL</span><h2>Etapas do funil</h2></div><button class="link" data-view="crm">Abrir CRM ↗</button></div><div class="dash-bars">${stageRows}</div><div class="dash-mini-stats"><span>Contatados <strong>${esc(m.contacted)}</strong></span><span>Clientes ganhos <strong>${esc(m.customers)}</strong></span><span>Score médio <strong>${esc(m.avg_score)}</strong></span></div></section>
+      <section class="dash-panel"><div class="dash-panel-heading"><div><span class="dash-kicker">EVOLUÇÃO COMERCIAL</span><h2>Etapas do funil</h2></div><button class="link" data-view="crm">Abrir CRM ↗</button></div><div class="dash-bars">${stageRows}</div><div class="dash-mini-stats"><span>Contatados <strong>${esc(m.contacted)}</strong></span><span>Clientes ganhos <strong>${esc(m.customers)}</strong></span><span>Pontuação média <strong>${esc(m.avg_score)}</strong></span></div></section>
       <section class="dash-panel"><div class="dash-panel-heading"><div><span class="dash-kicker">ÚLTIMAS AÇÕES</span><h2>Atividade recente</h2></div><button class="link" data-view="historico">Histórico ↗</button></div><div class="dash-activity">${x.activity.length?x.activity.slice(0,5).map(a=>`<div class="dash-activity-row"><span class="dash-activity-dot"></span><div><strong>${esc(a.name||'Lead')} · ${esc(a.kind)}</strong><small>${esc(a.detail||'Atividade registrada')}</small></div><time>${date(a.created_at)}</time></div>`).join(''):'<div class="dash-empty">Suas atividades aparecerão aqui quando você iniciar os contatos.</div>'}</div></section></div>
       <section class="dash-panel dash-recent"><div class="dash-panel-heading"><div><span class="dash-kicker">FILA DE OPORTUNIDADES</span><h2>Empresas recentes</h2></div><button class="link" data-view="leads">Todos os leads ↗</button></div>${x.recent.length?x.recent.map(l=>`<button class="dash-lead-row" data-lead="${l.id}"><span class="dash-lead-avatar">${esc(l.name?.[0]?.toUpperCase()||'E')}</span><span class="dash-lead-info"><strong>${esc(l.name)}</strong><small>${esc(l.city||'Cidade não informada')} · ${esc(label(statuses,l.digital_status))}</small></span><span class="dash-lead-stage">${esc(label(stages,l.stage))}</span><span class="dash-lead-score">${esc(l.score)} pts</span><span aria-hidden="true">${iconSvg('arrow',14)}</span></button>`).join(''):'<div class="dash-empty">Nenhuma empresa salva ainda. Use o Radar ou importe o JSON da Apify para começar.</div>'}</section></div>`;
   }catch(e){failure(e)}
@@ -247,7 +265,7 @@ function localDetails(data,tab){
   if(tab==='perfil'){
     const items=[['Nome',l.name],['Categoria',l.category],['Cidade e UF',[l.city,l.state].filter(Boolean).join(', ')],['Endereço',l.address],['Telefone',l.phone],['Perfil no Maps',l.maps_url],['Site informado',l.website],['Instagram',l.instagram],['Nota pública importada',l.rating==null?'':l.rating],['Avaliações importadas',l.reviews_count==null?'':l.reviews_count]];
     const p=data.profile;
-    return `<div class="notice">Raio-X do perfil com dados importados e, quando você aciona a coleta, uma amostra de até 10 avaliações do Maps. A amostra não representa o histórico inteiro da empresa.</div><div class="local-facts">${items.map(([name,value])=>`<div class="local-fact"><small>${esc(name)}</small><strong>${esc(value==null||value===''?'Não informado':value)}</strong></div>`).join('')}${p?[['Fotos na amostra',p.photos_sample],['Atualizações do proprietário na amostra',p.updates_sample],['Avaliações consultadas',p.review_sample],['Respostas observadas',p.answered_sample]].map(([k,v])=>`<div class="local-fact"><small>${esc(k)}</small><strong>${esc(v)}</strong></div>`).join(''):''}</div><p class="help">Presença digital: ${esc(label(statuses,l.digital_status))} · Score de oportunidade do CRM: ${esc(l.score)}. Esse score não é nota oficial do Google. ${p?'Amostra coletada em '+date(p.collected_at):''}</p><div class="button-row"><button class="btn primary" data-local-run="profile" ${!state.user.apify?'disabled':''}>Atualizar perfil pela Apify</button><button class="btn" data-enrich="${l.id}">Pesquisar presença com Firecrawl</button></div><p class="help">A consulta Apify tem cobrança própria; o valor depende do seu plano.</p>${localJobInfo(data,'profile')}`;
+    return `<div class="notice">Raio-X do perfil com dados importados e, quando você aciona a coleta, uma amostra de até 10 avaliações do Maps. A amostra não representa o histórico inteiro da empresa.</div><div class="local-facts">${items.map(([name,value])=>`<div class="local-fact"><small>${esc(name)}</small><strong>${esc(value==null||value===''?'Não informado':value)}</strong></div>`).join('')}${p?[['Fotos na amostra',p.photos_sample],['Atualizações do proprietário na amostra',p.updates_sample],['Avaliações consultadas',p.review_sample],['Respostas observadas',p.answered_sample]].map(([k,v])=>`<div class="local-fact"><small>${esc(k)}</small><strong>${esc(v)}</strong></div>`).join(''):''}</div><p class="help">Presença digital: ${esc(label(statuses,l.digital_status))} · Pontuação de oportunidade do CRM: ${esc(l.score)}. Essa pontuação não é nota oficial do Google. ${p?'Amostra coletada em '+date(p.collected_at):''}</p><div class="button-row"><button class="btn primary" data-local-run="profile" ${!state.user.apify?'disabled':''}>Atualizar perfil pela Apify</button><button class="btn" data-enrich="${l.id}">Pesquisar presença com Firecrawl</button></div><p class="help">A consulta Apify tem cobrança própria; o valor depende do seu plano.</p>${localJobInfo(data,'profile')}`;
   }
   if(tab==='regiao'){
     const peers=[...(l.rating==null?[]:[l]),...data.peers].sort((a,b)=>(Number(b.rating)||0)-(Number(a.rating)||0)||(Number(b.reviews_count)||0)-(Number(a.reviews_count)||0));
@@ -276,7 +294,7 @@ function localDetails(data,tab){
 async function crmPage(){
   title('CRM','Arraste os cards para mudar a etapa do lead.');
   const el=document.getElementById('content');
-  el.innerHTML=`<div class="section-title"><div><h1>Pipeline comercial</h1><p>Da descoberta ao contrato fechado. Arraste os cards ou altere a etapa no detalhe.</p></div></div><div class="kanban" id="kanban"></div>`;
+  el.innerHTML=`<div class="section-title"><div><h1>Funil comercial</h1><p>Da descoberta ao contrato fechado. Arraste os cards ou altere a etapa no detalhe.</p></div></div><div class="kanban" id="kanban"></div>`;
   try{const data=await api('/leads');state.leads=data.items;document.getElementById('kanban').innerHTML=stages.map(([code,name])=>{const items=data.items.filter(l=>l.stage===code);return `<section class="column" data-drop="${code}"><div class="column-head">${esc(name)}<span>${items.length}</span></div>${items.map(l=>`<div class="kanban-card" draggable="true" data-drag="${l.id}"><button class="link" data-lead="${l.id}" style="padding:0;text-align:left"><strong>${esc(l.name)}</strong></button><small>${esc(l.category||'Sem segmento')} · ${esc(l.city||'')}</small><span class="score">${l.score}</span></div>`).join('')}</section>`}).join('');}
   catch(e){failure(e)}
 }
@@ -305,9 +323,9 @@ async function exportPage(){
   document.getElementById('content').innerHTML=`<div class="section-title"><div><h1>Exportar leads</h1><p>Baixe uma cópia dos contatos em CSV para suas planilhas.</p></div></div><section class="panel"><h2>Seu banco de empresas</h2><p class="help">O CSV traz os principais campos dos leads ativos; notas detalhadas e evidências continuam no Supabase. O download não remove nada do CRM.</p><button class="btn primary" data-action="export">${iconSvg('download',16)} Baixar CSV</button></section>`;
 }
 async function analyticsPage(){
-  title('Analytics','Acompanhe a conversão do seu funil.');
+  title('Análises','Acompanhe a conversão do seu funil.');
   const el=document.getElementById('content');el.innerHTML=`<div class="section-title"><div><h1>Resultados comerciais</h1><p>Dados calculados a partir dos registros reais do CRM.</p></div></div><div id="analytics"></div>`;
-  try{const x=await api('/dashboard'),m=x.metrics,max=Math.max(...x.stages.map(y=>y.count),1);document.getElementById('analytics').innerHTML=`<div class="metrics">${metric('Leads',m.saved)}${metric('Contatados',m.contacted)}${metric('Propostas',m.proposals)}${metric('Clientes',m.customers)}</div><div class="two-col"><section class="panel"><h2>Pipeline por etapa</h2>${stages.map(([id,name])=>{const count=x.stages.find(y=>y.stage===id)?.count||0;return `<div class="stat-line"><span>${name}</span><strong>${count}</strong></div><div class="bar"><span style="width:${count/max*100}%"></span></div>`}).join('')}</section><section class="panel"><h2>Segmentos mais presentes</h2>${x.niches.length?x.niches.map(y=>`<div class="row-item"><strong>${esc(y.category)}</strong><span>${y.count}</span></div>`).join(''):'<div class="empty">Sem dados por segmento.</div>'}<p class="help" style="margin-top:20px">Custos por lead dependem dos relatórios de consumo dos provedores; o CRM não estima valores que ainda não foram registrados.</p></section></div>`;}catch(e){failure(e)}
+  try{const x=await api('/dashboard'),m=x.metrics,max=Math.max(...x.stages.map(y=>y.count),1);document.getElementById('analytics').innerHTML=`<div class="metrics">${metric('Leads',m.saved)}${metric('Contatados',m.contacted)}${metric('Propostas',m.proposals)}${metric('Clientes',m.customers)}</div><div class="two-col"><section class="panel"><h2>Funil por etapa</h2>${stages.map(([id,name])=>{const count=x.stages.find(y=>y.stage===id)?.count||0;return `<div class="stat-line"><span>${name}</span><strong>${count}</strong></div><div class="bar"><span style="width:${count/max*100}%"></span></div>`}).join('')}</section><section class="panel"><h2>Segmentos mais presentes</h2>${x.niches.length?x.niches.map(y=>`<div class="row-item"><strong>${esc(y.category)}</strong><span>${y.count}</span></div>`).join(''):'<div class="empty">Sem dados por segmento.</div>'}<p class="help" style="margin-top:20px">Custos por oportunidade dependem dos relatórios de consumo dos provedores; o CRM não estima valores que ainda não foram registrados.</p></section></div>`;}catch(e){failure(e)}
 }
 function integrationsPage(){
   title('Integrações','Conectores e fontes de dados da sua operação.');
@@ -410,6 +428,14 @@ function newLead(){
   const box=document.createElement('div');box.className='drawer-overlay';box.id='new-lead-modal';box.innerHTML=`<aside class="drawer" style="width:min(530px,100%)"><div class="drawer-top"><h2>Cadastrar empresa</h2><button class="btn ghost" data-action="close-new">${iconSvg('close',16)}</button></div><div class="drawer-body"><form id="new-lead-form" class="form-grid"><label class="field span2">Nome da empresa<input name="name" required></label><label class="field">Segmento<input name="category"></label><label class="field">Telefone<input name="phone"></label><label class="field">Cidade<input name="city"></label><label class="field">UF<input name="state"></label><label class="field span2">Site<input name="website"></label><label class="field span2">Instagram<input name="instagram"></label><button class="btn primary">Salvar lead</button></form></div></aside>`;document.body.append(box);
 }
 async function submitForm(form){
+  const button=form.querySelector('button[type="submit"],button:not([type])');
+  if(button?.disabled)return;
+  const original=button?.innerHTML;
+  if(button){button.disabled=true;button.setAttribute('aria-busy','true');button.textContent='Aguarde…'}
+  try{return await handleFormSubmit(form)}
+  finally{if(button?.isConnected){button.disabled=false;button.removeAttribute('aria-busy');button.innerHTML=original}}
+}
+async function handleFormSubmit(form){
   const obj=Object.fromEntries(new FormData(form).entries());
   if(form.classList.contains('token-form')){
     try{await post('/integrations',{service:form.dataset.service,token:obj.token});form.reset();state.user=await api('/me');settingsPage();toast('Chave salva com segurança.')}catch(e){toast(e.message,true)}return;

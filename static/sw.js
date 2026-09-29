@@ -1,5 +1,5 @@
 'use strict';
-const CACHE = 'crm-shell-v1';
+const CACHE = 'crm-shell-v2';
 const SHELL = ['/', '/app.js', '/styles.css', '/favicon.svg', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -13,15 +13,10 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/r/')) return;
   if (!SHELL.includes(url.pathname)) return;
-  if (url.pathname === '/') {
-    event.respondWith(fetch(request).then(response => {
-      if (response.ok) caches.open(CACHE).then(cache => cache.put('/', response.clone()));
-      return response;
-    }).catch(() => caches.match('/')));
-    return;
-  }
-  event.respondWith(caches.match(request).then(cached => cached || fetch(request).then(response => {
+  // Always prefer the current deployed shell. Fall back to cache only when offline.
+  // Cache-first scripts kept stale CRM code active after deployments.
+  event.respondWith(fetch(new Request(request, { cache: 'no-store' })).then(response => {
     if (response.ok) caches.open(CACHE).then(cache => cache.put(request, response.clone()));
     return response;
-  })));
+  }).catch(() => caches.match(request)));
 });

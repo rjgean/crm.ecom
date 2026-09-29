@@ -58,8 +58,16 @@ class PWATests(unittest.TestCase):
         self.assertIn("url.pathname.startsWith('/api/')", script)
         self.assertIn("url.pathname.startsWith('/r/')", script)
         self.assertIn("const SHELL =", script)
+        self.assertIn("crm-shell-v2", script)
+        self.assertIn("cache: 'no-store'", script)
+        self.assertIn(".catch(() => caches.match(request))", script)
         self.assertNotIn("/api/me", script)
         self.assertNotIn("/api/leads", script)
+
+    def test_deployed_shell_copies_stay_in_sync(self):
+        for name in ("app.js", "sw.js"):
+            with self.subTest(asset=name):
+                self.assertEqual((ROOT / "static" / name).read_bytes(), (ROOT / "public" / name).read_bytes())
 
 
 if __name__ == "__main__":
