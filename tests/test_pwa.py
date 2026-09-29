@@ -87,6 +87,12 @@ class PWATests(unittest.TestCase):
         self.assertIn(".lead-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))", styles)
         self.assertIn(".lead-actions .btn{flex:1 1 108px;min-height:38px", styles)
 
+    def test_sidebar_scroll_position_survives_section_navigation(self):
+        script = (ROOT / "static" / "app.js").read_text()
+        self.assertIn("navScrollTop: 0", script)
+        self.assertIn("const previousNavScroll=document.querySelector('.nav')?.scrollTop??state.navScrollTop", script)
+        self.assertIn("newNav.scrollTop=previousNavScroll", script)
+
 
 if __name__ == "__main__":
     unittest.main()
