@@ -1,0 +1,18 @@
+{
+  "id": "/",
+  "name": "CRM Ecom · Prospecção comercial",
+  "short_name": "CRM Ecom",
+  "description": "CRM para prospecção e relacionamento com empresas locais.",
+  "lang": "pt-BR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f2f5f6",
+  "theme_color": "#f2f5f6",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
