@@ -57,6 +57,24 @@ class CRMTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.csrf = value["csrf"]
 
+    def test_login_rejects_non_object_json_without_server_error(self):
+        status, value = self.request("POST", "/login", ["operator@example.test", "TestingPassphrase123!"])
+        self.assertEqual(status, 400)
+        self.assertIn("objeto JSON", value["error"])
+
+    def test_supabase_database_url_can_back_integration_encryption(self):
+        env = {
+            "CRM_CREDENTIALS_KEY": "",
+            "TURSO_AUTH_TOKEN": "",
+            "crmecom_TURSO_AUTH_TOKEN": "",
+            "SUPABASE_DB_URL": "postgresql://private-user:private-password@db.example.supabase.co/postgres",
+        }
+        with patch.dict(os.environ, env):
+            cipher = server.credential_cipher()
+            nonce = b"0123456789ab"
+            encrypted = cipher.encrypt(nonce, b"test-secret", b"apify")
+            self.assertEqual(cipher.decrypt(nonce, encrypted, b"apify"), b"test-secret")
+
     def test_local_diagnostics_manual_grid_and_dynamic_review_qr(self):
         self.login()
         company = {"name":"Ateliê Sol de Outubro", "category":"Loja de roupas", "city":"Niterói", "state":"RJ", "rating":4.5, "reviews_count":27}

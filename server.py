@@ -108,11 +108,13 @@ def admin_whatsapp():
 
 
 def credential_cipher():
-    # The Turso token is server-only, persistent across deployments, and is never
-    # stored in the database. Local installs can supply a separate long random key.
-    material = os.environ.get("CRM_CREDENTIALS_KEY") or turso_credentials()[1]
+    # Prefer a dedicated stable key. The database URL and legacy Turso token are
+    # server-only fallbacks so the integrations panel works without another
+    # hosting variable after the CRM has been connected to Supabase.
+    material = (os.environ.get("CRM_CREDENTIALS_KEY") or turso_credentials()[1]
+                or os.environ.get("SUPABASE_DB_URL", ""))
     if not material or len(material) < 32:
-        raise RuntimeError("Defina CRM_CREDENTIALS_KEY no servidor para salvar credenciais.")
+        raise RuntimeError("Conecte o banco privado do Supabase ou defina CRM_CREDENTIALS_KEY no servidor para salvar credenciais.")
     return AESGCM(hashlib.sha256(b"crm-ecom-credentials-v1:" + material.encode()).digest())
 
 
@@ -168,6 +170,7 @@ def init_db():
         con.executescript("""
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
         CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY, niche TEXT NOT NULL, city TEXT NOT NULL, state TEXT NOT NULL, limit_count INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'queued', apify_run_id TEXT, dataset_id TEXT, found INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS leads(
             id INTEGER PRIMARY KEY, external_id TEXT UNIQUE, name TEXT NOT NULL, name_key TEXT NOT NULL, category TEXT, city TEXT, state TEXT, address TEXT,
@@ -178,10 +181,14 @@ def init_db():
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS leads_lookup ON leads(name_key, city, state);
         CREATE INDEX IF NOT EXISTS leads_stage ON leads(stage);
+        CREATE INDEX IF NOT EXISTS leads_campaign_id_idx ON leads(campaign_id);
         CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, value TEXT, source_url TEXT, collected_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS observations_lead_recent ON observations(lead_id,id DESC);
         CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY, lead_id INTEGER REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS activities_lead_recent ON activities(lead_id,id DESC);
         CREATE TABLE IF NOT EXISTS lead_lists(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS list_items(list_id INTEGER NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, PRIMARY KEY(list_id, lead_id));
+        CREATE INDEX IF NOT EXISTS list_items_lead_id_idx ON list_items(lead_id);
         CREATE TABLE IF NOT EXISTS suppression(phone_digits TEXT PRIMARY KEY, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS integrations(name TEXT PRIMARY KEY, secret TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS app_settings(name TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -198,7 +205,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS google_sessions(token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS oauth_states(token_hash TEXT PRIMARY KEY, verifier TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, state TEXT, list_id INTEGER REFERENCES lead_lists(id), total INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued', error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS import_batches_list_id_idx ON import_batches(list_id);
         CREATE TABLE IF NOT EXISTS import_items(batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, PRIMARY KEY(batch_id,lead_id));
+        CREATE INDEX IF NOT EXISTS import_items_lead_id_idx ON import_items(lead_id);
         CREATE TABLE IF NOT EXISTS review_qr(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE, destination TEXT NOT NULL, scans INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS local_jobs(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, run_id TEXT, status TEXT NOT NULL DEFAULT 'queued', term TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS local_jobs_recent ON local_jobs(lead_id,kind,id DESC);
@@ -689,8 +698,10 @@ class Handler(BaseHTTPRequestHandler):
     def json_body(self):
         size = int(self.headers.get("Content-Length", "0"))
         if size > (4_000_000 if urllib.parse.urlsplit(self.path).path == "/api/import-apify" else 1_000_000): raise ApiError("Requisição muito grande", 413)
-        try: return json.loads(self.rfile.read(size)) if size else {}
-        except (ValueError, UnicodeDecodeError): raise ApiError("JSON inválido")
+        try: body = json.loads(self.rfile.read(size)) if size else {}
+        except (ValueError, UnicodeDecodeError, RecursionError): raise ApiError("JSON inválido")
+        if not isinstance(body, dict): raise ApiError("O corpo da requisição precisa ser um objeto JSON")
+        return body
 
     def do_GET(self): self.route("GET")
     def do_POST(self): self.route("POST")

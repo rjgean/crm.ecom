@@ -6,13 +6,13 @@ O CRM usa um único login de e-mail e senha. O administrador é criado na primei
 
 O banco persistente é o projeto Supabase [`crm-ecom`](https://supabase.com/dashboard/project/nhuputjibipbyxtocsac), na região de São Paulo. Importe JSON da Apify ou use as buscas do CRM: campanhas, leads, observações, listas e atividades são armazenados no mesmo PostgreSQL. No deployment Vercel, `SUPABASE_DB_URL` é obrigatória; sem ela a API retorna 503 e não grava no Turso. Os dados antigos de teste não serão migrados.
 
-Para ativar: configure `SUPABASE_DB_URL` com a URI privada do **Session pooler** do Supabase em Preview e Production; configure `ADMIN_EMAIL` e `ADMIN_PASSWORD` nos mesmos ambientes; mantenha `CRM_CREDENTIALS_KEY` para cifrar as chaves da Apify/Firecrawl salvas no painel. Teste primeiro a prévia, depois a produção. A proteção da Vercel em **All Deployments** intercepta a tela do CRM; após testar a autenticação na prévia, configure **Standard Protection** para mostrar o login próprio no domínio principal. A prévia pode permanecer protegida pela Vercel. Nunca envie a senha ou a URI do banco pelo chat.
+Para ativar: configure `SUPABASE_DB_URL` com a URI privada do **Session pooler** do Supabase em Preview e Production; configure `ADMIN_EMAIL` e `ADMIN_PASSWORD` nos mesmos ambientes. As chaves de serviço são salvas no painel e cifradas no servidor. `CRM_CREDENTIALS_KEY` é opcional, mas recomendada como chave estável e separada; se não existir, o servidor deriva a chave da URI privada do Supabase (trocar essa URI pode tornar ilegíveis as chaves já salvas). Teste primeiro a prévia, depois a produção. A proteção da Vercel em **All Deployments** intercepta a tela do CRM; após testar a autenticação na prévia, configure **Standard Protection** para mostrar o login próprio no domínio principal. A prévia pode permanecer protegida pela Vercel. Nunca envie a senha ou a URI do banco pelo chat.
 
 ## Objetivo
 
 Encontrar empresas e profissionais locais que ainda não possuem site próprio ou loja virtual, reunir evidências públicas sobre a presença digital de cada negócio e organizar a venda consultiva de sites e lojas criadas pelo operador na Nuvemshop ou Yampi. Oferta inicial: implantação entre R$ 1.500 e R$ 3.000, com valor definido na proposta individual.
 
-**Estado atual:** a produção ainda usa a versão anterior. A prévia desta mudança passa a usar somente e-mail/senha e Supabase para persistência. A execução ao vivo das integrações exige as chaves reais e um teste de ponta a ponta.
+**Estado atual:** o código está integrado com Supabase para persistência e o login do CRM usa e-mail e senha. As integrações externas precisam de suas próprias chaves e de um teste de ponta a ponta antes de depender delas.
 
 ## Iniciar a aplicação
 
@@ -21,7 +21,7 @@ Requisitos: Python 3.12+ e `pip install -r requirements.txt`.
 1. Configure as variáveis de `.env.example` no ambiente. Para uma primeira execução local, use um e-mail de operador e uma senha exclusiva de pelo menos 12 caracteres. O arquivo `.env` **não é carregado automaticamente**: exporte as variáveis no shell, no gerenciador de serviço ou na hospedagem.
 2. Execute `python server.py` e abra `http://127.0.0.1:8080` (ou o HOST/PORT definidos). O diretório `data/` será criado automaticamente para o SQLite.
 3. Entre com as credenciais configuradas; altere a senha em Configurações após o primeiro acesso. Para redefinir uma senha esquecida, mude `ADMIN_PASSWORD` na Vercel e faça novo deployment.
-4. Insira as chaves da Apify e Firecrawl em **Configurações**. Em execução local, defina antes uma variável `CRM_CREDENTIALS_KEY` com um valor aleatório e durável de pelo menos 32 caracteres. Como alternativa, configure `APIFY_TOKEN` e `FIRECRAWL_API_KEY` no servidor. Sem chaves, cadastro manual, importação CSV, listas, CRM, mensagens e exportação funcionam normalmente.
+4. Insira as chaves da Apify, Firecrawl e Groq em **Configurações**. Em execução local, defina `CRM_CREDENTIALS_KEY` com um valor aleatório e durável de pelo menos 32 caracteres; se estiver usando Supabase, o servidor também pode derivar a chave da URI privada. Como alternativa, configure as chaves de serviço diretamente no servidor. Sem chaves, cadastro manual, importação CSV, listas, CRM e exportação continuam disponíveis.
 5. Para testar: `python -m unittest discover -s tests -v` e `node --check static/app.js` se tiver Node instalado.
 
 Exemplo local (troque os valores antes de usar):
@@ -48,14 +48,14 @@ O projeto inclui `app.py` (entrada WSGI), `pyproject.toml`, `requirements.txt`, 
 | `ADMIN_PASSWORD` | Senha inicial com ao menos 12 caracteres; troque pela interface após entrar. |
 | `APIFY_TOKEN` | Token privado da Apify; habilita campanhas. |
 | `FIRECRAWL_API_KEY` | Chave privada da Firecrawl; habilita enriquecimento. |
-| `CRM_CREDENTIALS_KEY` | Chave privada, aleatória e estável para cifrar as credenciais de integrações. |
+| `CRM_CREDENTIALS_KEY` | Opcional, recomendada: chave privada, aleatória e estável para cifrar credenciais; sem ela usa-se a credencial privada do banco. |
 | `COOKIE_SECURE` | Defina `1` em HTTPS (na Vercel já é o padrão). |
 
 Salve as variáveis na hospedagem e crie um **novo deployment** para que entrem em vigor. Nunca insira a senha do banco, a chave de cifragem ou chaves de integrações em `.env.example`, no repositório ou em prints. A API devolve 503 até a conexão Supabase estar válida. Cada campanha pode gerar cobranças na Apify e Firecrawl; valide uma busca pequena antes de aumentar o volume.
 
 **Acesso na Vercel:** a tela inicial pede somente e-mail e senha. A proteção própria da Vercel para a produção precisa ser alterada para Standard Protection depois de testar a prévia; enquanto estiver em All Deployments, a Vercel mostra seu login antes da tela do CRM.
 
-**Atenção aos ambientes:** a produção acompanha `main` e a mudança de banco e login está na branch `supabase-google-migration` (Preview). Variáveis adicionadas em Preview precisam de novo deployment dessa branch. O Turso permanece apenas como configuração legada da produção até a troca.
+**Atenção aos ambientes:** a produção acompanha `main`. Variáveis adicionadas ou alteradas na Vercel só entram em vigor em um novo deployment do ambiente correspondente. Turso e Google OAuth são compatibilidade legada; o caminho atual usa Supabase e login por e-mail e senha.
 
 As buscas da Apify e do Firecrawl são cobradas nas contas dos provedores. O limite de 1 a 100 empresas restringe a leitura e os resultados pretendidos; custos finais e limites efetivos do ator precisam ser validados na conta conectada. O app não envia mensagens automaticamente nem comprova que um número tem WhatsApp. A API4com é usada à parte para ligação.
 
