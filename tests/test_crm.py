@@ -247,6 +247,32 @@ class CRMTests(unittest.TestCase):
         _, qr = self.request("GET", f"/leads/{lead_id}/review-qr")
         self.assertEqual(qr["scans"], 1)
 
+    def test_nfc_qr_searches_saved_leads_and_google_maps_results(self):
+        self.login()
+        _, lead = self.request("POST", "/leads", {"name":"Café do Largo", "city":"Niterói", "state":"RJ", "address":"Rua das Flores, 10", "maps_url":"https://www.google.com/maps/place/Cafe+do+Largo"})
+        status, result = self.request("GET", "/review-qr/search?q=Caf%C3%A9%20do%20Largo")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["items"][0]["id"], lead["id"])
+        self.assertIn("web_candidates", result)
+
+        google_url = "https://www.google.com/maps/place/Caf%C3%A9+do+Largo+Centro"
+        search_response = {"success":True,"data":{"web":[
+            {"title":"Café do Largo Centro · Google Maps","description":"Niterói, RJ","url":google_url},
+            {"title":"Instagram Café do Largo","url":"https://www.instagram.com/cafedolargo/"},
+        ]}}
+        with patch("server.service_key", return_value="test-firecrawl-key"), patch("server.request_json", return_value=search_response) as search:
+            status, result = self.request("GET", "/review-qr/search?q=Caf%C3%A9%20do%20Largo%20Centro")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(result["web_candidates"]), 1)
+        self.assertEqual(result["web_candidates"][0]["url"], google_url)
+        search.assert_called_once()
+
+        status, created = self.request("POST", "/review-qr/create", {"name":"Café do Largo Centro","address":"Niterói, RJ","destination":google_url})
+        self.assertEqual(status, 201)
+        self.assertEqual(created["qr"]["destination"], google_url)
+        self.assertEqual(created["lead"]["name"], "Café do Largo Centro")
+        self.assertEqual(self.request("POST", "/review-qr/create", {"name":"Site malicioso","destination":"https://evil.example/maps/place/1"})[0], 400)
+
     def test_apify_local_profile_and_real_grid_jobs(self):
         self.login()
         _, lead = self.request("POST", "/leads", {"name":"Café Lua Azul", "city":"Niterói", "state":"RJ", "category":"Café"})

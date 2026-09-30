@@ -1,5 +1,5 @@
 const root = document.getElementById('app');
-const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), theme: (()=>{try{return localStorage.getItem('crm-theme')==='dark'?'dark':'light'}catch{return 'light'}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, navScrollTop: 0, batchId: null, importPoll: null, campaignPoll: null, campaignAdvancing: false, localPoll: null, localLeadId: null, localTab: 'radar', localData: null, localSearch: '', crmLayout: (()=>{try{return localStorage.getItem('crm-layout')==='list'?'list':'board'}catch{return 'board'}})(), crmTab:'pipeline', crmScripts:[], crmScriptStage:'contato', crmScriptKey:'price', siteLeadId:0, sitePlatform:'lovable', agendaMonth:new Date(new Date().getFullYear(),new Date().getMonth(),1), agendaDay:new Date().toLocaleDateString('en-CA'), appointments:[], customNiches: [], nicheVisibleCount: 60, radarFilters: {city:'',niche:'',state:'',min_rating:'',max_reviews:''} };
+const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), theme: (()=>{try{return localStorage.getItem('crm-theme')==='dark'?'dark':'light'}catch{return 'light'}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, navScrollTop: 0, batchId: null, importPoll: null, campaignPoll: null, campaignAdvancing: false, localPoll: null, localLeadId: null, localTab: 'radar', localData: null, localSearch: '', reviewQrSearch:'', reviewQrResults:null, reviewQrCreated:null, crmLayout: (()=>{try{return localStorage.getItem('crm-layout')==='list'?'list':'board'}catch{return 'board'}})(), crmTab:'pipeline', crmScripts:[], crmScriptStage:'contato', crmScriptKey:'price', siteLeadId:0, sitePlatform:'lovable', agendaMonth:new Date(new Date().getFullYear(),new Date().getMonth(),1), agendaDay:new Date().toLocaleDateString('en-CA'), appointments:[], customNiches: [], nicheVisibleCount: 60, radarFilters: {city:'',niche:'',state:'',min_rating:'',max_reviews:''} };
 document.documentElement.dataset.theme=state.theme;
 const iconPaths={
   dashboard:'<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/>',
@@ -255,7 +255,7 @@ const localModules = [
   ['proposta','file','Proposta Relâmpago','Monte um texto comercial editável com os dados do lead.'],
   ['contrato','fileCheck','Contrato Express','Prepare os dados de contratação para revisão antes do envio.'],
   ['esteira','kanban','Esteira e CRM','Abra o funil e acompanhe as negociações.'],
-  ['qr','qr','QR Codes','Crie um QR de avaliações com destino editável e contagem de acessos.']
+  ['qr','qr','NFC/QR','Encontre uma empresa ou cole o link do Google para gerar um QR de avaliações.']
 ];
 async function localPage(){
   title('Inteligência Local','Da descoberta ao atendimento de empresas locais.');
@@ -286,6 +286,7 @@ async function renderLocalModule(){
     return;
   }
   if(tab==='esteira'){panel.innerHTML=`<h2>Esteira de Clientes e CRM</h2><p class="help">Mova empresas entre as etapas do pipeline e registre propostas, conversas e próximos passos no detalhe do lead.</p><div class="button-row"><button class="btn primary" data-view="crm">Abrir esteira →</button><button class="btn" data-view="leads">Banco de leads</button></div>`;return}
+  if(tab==='qr'){reviewQrPage(panel);return}
   const search=`<form id="local-search-form" class="button-row" style="margin:12px 0"><input class="input" name="q" aria-label="Pesquisar empresa" placeholder="Buscar nome, cidade ou nicho" value="${esc(state.localSearch)}"><button class="btn">Pesquisar</button></form><p class="help">Exibindo até 100 empresas por pesquisa. Digite o nome para localizar outras.</p>`;
   if(!state.localItems?.length){panel.innerHTML=search+'<div class="empty"><strong>Nenhuma empresa encontrada.</strong> Tente outro nome ou busque novos leads.</div>';return}
   const chosen=state.localLeadId;
@@ -326,11 +327,24 @@ function localDetails(data,tab){
     const contract=`DADOS PARA CONTRATO — RASCUNHO\n\nContratante: ${l.name}\nEndereço: ${l.address||'[confirmar]'}\nContato: ${l.phone||'[confirmar]'}\nPrestador: [nome ou razão social, documento e endereço]\n\nServiço: ${service}\nEntregáveis: [descrever e revisar]\nValor: ${price}\nForma de pagamento: [definir]\nPrazos e aprovação das entregas: [definir]\nSuporte, alterações e cancelamento: [definir com as partes]\nData e assinatura das partes: [definir]\n\nEste é um roteiro editável para preencher. Revise os dados e o texto jurídico antes de usar como contrato.`;
     return `<div class="notice">${tab==='proposta'?'Rascunho baseado nos dados salvos. Confira o serviço, prazo e valor antes de apresentar.':'Roteiro de contratação. Preencha os termos com as partes e faça revisão jurídica antes de assinar.'}</div><label class="field">${tab==='proposta'?'Proposta editável':'Dados do contrato editáveis'}<textarea id="local-document" rows="17">${esc(tab==='proposta'?proposal:contract)}</textarea></label><p class="help" id="local-document-saved">Rascunho ainda não salvo.</p><div class="button-row" style="margin-top:12px"><button class="btn primary" data-local-save="${tab==='proposta'?'proposal':'contract'}">Salvar no CRM</button><a class="btn" id="local-pdf" href="/api/leads/${l.id}/local-document/${tab==='proposta'?'proposal':'contract'}.pdf" download hidden>Baixar PDF salvo</a><button class="btn" data-local-download="${tab}">Baixar TXT</button><button class="btn" data-local-copy="1">Copiar texto</button><button class="btn" data-lead="${l.id}">Abrir lead</button></div><p class="help" style="margin-top:12px">Salvar uma proposta move o lead para a etapa Proposta se ele estiver numa etapa anterior. O PDF apresenta o texto salvo; alterações feitas depois precisam ser salvas novamente.</p>`;
   }
-  if(tab==='qr'){
-    const qr=data.qr;
-    return `<p class="help">Use o link de avaliações obtido do próprio perfil do Google. O QR leva a um endereço permanente deste CRM; você pode trocar o destino sem reimprimir. Cada abertura do link aumenta o contador, inclusive acessos de teste.</p><form id="local-qr-form" class="form-grid"><label class="field span2">Link HTTPS do perfil ou avaliações no Google<input name="destination" type="url" required maxlength="1000" placeholder="https://g.page/r/.../review" value="${esc(qr?.destination||'')}"></label><button class="btn primary">${qr?'Atualizar destino':'Criar QR Code'}</button></form>${qr?`<div class="local-qr-preview"><img src="/api/leads/${l.id}/review-qr.svg" alt="QR Code de avaliações de ${esc(l.name)}"><div><strong>${esc(qr.scans)} acessos registrados</strong><p class="help">Link permanente: <span class="mono">${esc(location.origin+'/r/'+qr.token)}</span><br>Atualizado em ${date(qr.updated_at)}.</p><a class="btn" href="/api/leads/${l.id}/review-qr.svg" download="avaliacoes-${l.id}.svg">Baixar QR em SVG</a></div></div>`:''}`;
-  }
   return '';
+}
+
+function reviewQrPage(panel){
+  panel.innerHTML=`<div class="panel-head"><div><h2>NFC/QR de avaliações</h2><p class="help">Pesquise primeiro seus leads salvos. Com o Firecrawl configurado, também procuramos perfis públicos no Google Maps.</p></div></div><form id="review-qr-search-form" class="form-grid review-qr-search"><label class="field span2">Nome da empresa ou link do Google Maps<input type="search" name="q" required minlength="2" maxlength="300" autocomplete="off" placeholder="Ex.: Barbearia Fontes, São Gonçalo ou https://maps.app.goo.gl/..." value="${esc(state.reviewQrSearch)}"></label><button class="btn primary" type="submit">${iconSvg('search',16)} Encontrar empresa</button></form><p class="help">Confirme o nome e o endereço antes de gerar o material. O QR direciona ao perfil/link público escolhido; teste com a câmera do celular antes de imprimir.</p><div id="review-qr-results">${state.reviewQrResults?reviewQrResultsHtml(state.reviewQrResults):'<div class="empty">Digite o nome ou cole um link do Google Maps para começar.</div>'}</div>${state.reviewQrCreated?reviewQrCreatedHtml(state.reviewQrCreated):''}`;
+}
+function reviewQrResultsHtml(result){
+  const local=result.items||[], web=result.web_candidates||[];
+  const localHtml=local.length?`<h3>Encontrados no Banco de leads</h3><div class="review-qr-list">${local.map(l=>`<article class="review-qr-card"><div><strong>${esc(l.name)}</strong><small>${esc(l.category||'Segmento não informado')} · ${esc([l.address,l.city,l.state].filter(Boolean).join(' · ')||'Localização não informada')}</small>${l.maps_url?`<a href="${esc(l.maps_url)}" target="_blank" rel="noopener noreferrer">Conferir perfil no Google Maps ↗</a>`:'<small>Este lead ainda não tem link do Google Maps salvo.</small>'}${l.qr_token?`<small>${esc(l.scans||0)} acessos · NFC/QR já criado</small>`:''}</div><button class="btn" data-review-qr-use="crm-${l.id}" ${l.maps_url?'':'disabled'}>${l.qr_token?'Abrir NFC/QR':'Gerar NFC/QR'}</button></article>`).join('')}</div>`:'<div class="empty">Nenhum lead correspondente no seu Banco de leads.</div>';
+  const webHtml=web.length?`<h3>Perfis públicos encontrados na web</h3><div class="review-qr-list">${web.map((item,i)=>`<article class="review-qr-card"><div><strong>${esc(item.name)}</strong><small>${esc(item.address||'Resultado público do Google Maps')}</small><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Conferir este perfil ↗</a></div><button class="btn primary" data-review-qr-use="web-${i}">Usar este perfil</button></article>`).join('')}</div>`:'';
+  const noWeb=!result.web_available?'<div class="notice">Pesquisa na internet indisponível: adicione a chave do Firecrawl em Configurações. Você ainda pode buscar nos leads salvos ou colar diretamente o link do Maps.</div>':'';
+  const webError=result.web_error?`<div class="notice">${esc(result.web_error)} Seus resultados do CRM continuam disponíveis. Você pode tentar novamente ou colar o link copiado do Google Maps.</div>`:'';
+  const noResults=local.length===0&&web.length===0&&!result.web_error?'<div class="empty">Nenhum perfil do Google Maps foi identificado com segurança. Adicione a cidade/bairro ao nome ou cole o link exato do perfil.</div>':'';
+  return `${localHtml}${webHtml}${noWeb}${webError}${noResults}`;
+}
+function reviewQrCreatedHtml(data){
+  const lead=data.lead||{},qr=data.qr||{},id=Number(data.lead_id);
+  return `<section class="review-qr-created"><div><span class="badge">Pronto para conferir</span><h3>${esc(lead.name||'Empresa')}</h3><p class="help">${esc([lead.address,lead.city,lead.state].filter(Boolean).join(' · ')||'Confira se o perfil escolhido é a unidade correta.')}</p><p class="help">Link permanente deste CRM: <span class="mono">${esc(location.origin+'/r/'+qr.token)}</span></p><div class="button-row"><button class="btn" data-review-qr-copy="${esc(location.origin+'/r/'+qr.token)}">Copiar link</button><a class="btn" href="/api/leads/${id}/review-qr.svg" download="nfc-qr-${id}.svg">Baixar QR em SVG</a><a class="btn" href="${esc(qr.destination||lead.maps_url||'#')}" target="_blank" rel="noopener noreferrer">Testar destino ↗</a><button class="btn" data-lead="${id}">Abrir lead</button></div></div><img src="/api/leads/${id}/review-qr.svg" alt="NFC/QR de avaliações para ${esc(lead.name||'empresa')}"><small>${esc(qr.scans||0)} acessos registrados neste link.</small></section>`;
 }
 
 async function crmPage(){
@@ -579,6 +593,12 @@ async function handleFormSubmit(form){
   }
   if(form.id==='crm-filter-form'){normalizeCrmFilters();state.crmFilters.q=String(obj.q||'').trim();await crmPage();return}
   try{
+    if(form.id==='review-qr-search-form'){
+      state.reviewQrSearch=String(obj.q||'').trim();state.reviewQrCreated=null;
+      const result=document.getElementById('review-qr-results');if(result)result.innerHTML='<div class="empty">Pesquisando no Banco de leads e na web…</div>';
+      const found=await api('/review-qr/search?q='+encodeURIComponent(state.reviewQrSearch));
+      state.reviewQrResults=found;reviewQrPage(document.getElementById('local-panel'));return;
+    }
     if(form.id==='objection-script-form'){
       const saved=await post('/sales-scripts',obj);
       const index=state.crmScripts.findIndex(x=>x.stage===saved.stage&&x.objection_key===saved.objection_key);
@@ -617,7 +637,19 @@ async function handleFormSubmit(form){
 
 document.addEventListener('submit',event=>{event.preventDefault();submitForm(event.target)});
 document.addEventListener('click',async event=>{
-  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-campaign-leads],[data-crm-layout],[data-crm-quick],[data-crm-tab],[data-agenda-month],[data-agenda-day],[data-edit-appointment],[data-delete-appointment],[data-pick-niche],[data-edit-niche],[data-delete-niche],[data-remove-token],[data-remove-collaborator],[data-import-batch],[data-import-resume],[data-campaign-resume],[data-find-instagram],[data-instagram-confirm],[data-local-tab],[data-local-sidebar],[data-local-radar-search],[data-local-copy],[data-local-download],[data-local-run],[data-local-save],[data-local-peers]');if(!hit)return;
+  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-campaign-leads],[data-crm-layout],[data-crm-quick],[data-crm-tab],[data-agenda-month],[data-agenda-day],[data-edit-appointment],[data-delete-appointment],[data-pick-niche],[data-edit-niche],[data-delete-niche],[data-remove-token],[data-remove-collaborator],[data-import-batch],[data-import-resume],[data-campaign-resume],[data-find-instagram],[data-instagram-confirm],[data-local-tab],[data-local-sidebar],[data-local-radar-search],[data-local-copy],[data-local-download],[data-local-run],[data-local-save],[data-local-peers],[data-review-qr-use],[data-review-qr-copy]');if(!hit)return;
+  if(hit.dataset.reviewQrUse){
+    const [source,key]=hit.dataset.reviewQrUse.split('-');let payload;
+    if(source==='crm'){
+      const lead=(state.reviewQrResults?.items||[]).find(item=>String(item.id)===key);if(!lead?.maps_url)return;
+      payload={lead_id:lead.id,name:lead.name,destination:lead.maps_url,city:lead.city,state:lead.state,address:lead.address};
+    }else{
+      const candidate=state.reviewQrResults?.web_candidates?.[Number(key)];if(!candidate)return;
+      payload={name:candidate.name,destination:candidate.url,address:candidate.address};
+    }
+    try{hit.disabled=true;state.reviewQrCreated=await post('/review-qr/create',payload);toast('NFC/QR salvo no CRM. Confira o perfil e teste o link antes de imprimir.');reviewQrPage(document.getElementById('local-panel'))}catch(e){toast(e.message,true)}finally{hit.disabled=false}return;
+  }
+  if(hit.dataset.reviewQrCopy){try{await navigator.clipboard.writeText(hit.dataset.reviewQrCopy);toast('Link permanente copiado.')}catch{toast('Não foi possível copiar o link.',true)}return}
   if(hit.dataset.localRadarSearch){const f=document.getElementById('local-radar-form');const filters=f?Object.fromEntries(new FormData(f).entries()):state.radarFilters;navigate('buscar');setTimeout(()=>{const campaign=document.getElementById('campaign-form');if(campaign){campaign.elements.niche.value=filters.niche||'';campaign.elements.city.value=filters.city||'';campaign.elements.state.value=filters.state||''}},0);return}
   if(hit.dataset.localSidebar){state.localTab=hit.dataset.localSidebar;navigate('local/'+state.localTab);document.getElementById('sidebar')?.classList.remove('open');document.getElementById('scrim')?.classList.remove('show');return}
   if(hit.dataset.localPeers){const l=state.localData?.lead;if(!l)return;navigate('buscar');setTimeout(()=>{const f=document.getElementById('campaign-form');if(f){f.elements.niche.value=l.category||'';f.elements.city.value=l.city||'';f.elements.state.value=l.state||''}},0);return}

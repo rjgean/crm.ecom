@@ -390,6 +390,20 @@ DIRECTORY = ("google.com", "maps.google", "yelp.", "tripadvisor.", "solutudo.com
 SHOP = ("nuvemshop.com.br", "lojavirtualnuvem.com.br", "yampi.com.br", "myshopify.com")
 
 
+def is_google_maps_url(value):
+    try:
+        parsed = urllib.parse.urlsplit(str(value or "").strip())
+        host = (parsed.hostname or "").lower()
+        allowed = host in ("google.com", "www.google.com", "maps.google.com", "search.google.com", "maps.app.goo.gl", "g.page")
+        valid_path = ((host == "maps.app.goo.gl" and bool(parsed.path.strip("/"))) or
+                      (host == "g.page" and parsed.path.startswith("/r/")) or
+                      (host in ("google.com", "www.google.com", "maps.google.com", "search.google.com") and
+                       (parsed.path == "/maps" or parsed.path.startswith(("/maps/", "/local/", "/search")))))
+        return parsed.scheme == "https" and allowed and valid_path and not parsed.username and not parsed.password and not parsed.port
+    except (TypeError, ValueError):
+        return False
+
+
 def enrich_lead(lead_id):
     token = service_key("firecrawl")
     if not token: return False
@@ -849,6 +863,8 @@ class Handler(BaseHTTPRequestHandler):
                 if method == "DELETE": return self.delete_appointment(int(match[1]))
             if method == "GET" and path == "/api/local/summary": return self.local_summary()
             if method == "GET" and path == "/api/local/radar": return self.local_radar()
+            if method == "GET" and path == "/api/review-qr/search": return self.review_qr_search()
+            if method == "POST" and path == "/api/review-qr/create": return self.create_review_qr()
             if method == "POST" and path == "/api/leads": return self.create_lead()
             if method == "POST" and path == "/api/import": return self.import_leads()
             if method == "POST" and path == "/api/import-apify": return self.import_apify()
@@ -1350,6 +1366,44 @@ class Handler(BaseHTTPRequestHandler):
             rows = [dict(x) for x in con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,digital_status,stage FROM leads WHERE " + where + " ORDER BY id DESC LIMIT 200", params)]
         return self.send({"items": rows, "total": total})
 
+    def review_qr_search(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("q", [""])[0].strip()[:300]
+        if len(query) < 2: raise ApiError("Digite pelo menos 2 caracteres para pesquisar")
+        parsed = urllib.parse.urlsplit(query)
+        is_maps_link = is_google_maps_url(query)
+        with db() as con:
+            if is_maps_link:
+                rows = [dict(x) for x in con.execute("""SELECT l.id,l.name,l.category,l.city,l.state,l.address,l.maps_url,r.token AS qr_token,r.scans
+                    FROM leads l LEFT JOIN review_qr r ON r.lead_id=l.id
+                    WHERE l.blocked=0 AND (l.maps_url=? OR l.maps_url LIKE ?) ORDER BY CASE WHEN l.maps_url=? THEN 0 ELSE 1 END,l.id DESC LIMIT 12""", (query, "%" + query + "%", query))]
+            else:
+                like = "%" + query.replace("%", "\\%").replace("_", "\\_") + "%"
+                rows = [dict(x) for x in con.execute("""SELECT l.id,l.name,l.category,l.city,l.state,l.address,l.maps_url,r.token AS qr_token,r.scans
+                    FROM leads l LEFT JOIN review_qr r ON r.lead_id=l.id
+                    WHERE l.blocked=0 AND (l.name LIKE ? ESCAPE '\\' OR l.address LIKE ? ESCAPE '\\' OR l.city LIKE ? ESCAPE '\\' OR l.category LIKE ? ESCAPE '\\')
+                    ORDER BY CASE WHEN lower(l.name)=lower(?) THEN 0 ELSE 1 END,l.id DESC LIMIT 12""", (like, like, like, like, query))]
+        web_candidates = []
+        web_error = None
+        if is_maps_link:
+            known = rows[0] if rows else None
+            web_candidates = [{"name": known["name"] if known else "Perfil do Google Maps", "address": known["address"] if known else "", "url": query}]
+        elif service_key("firecrawl"):
+            try:
+                result = request_json("https://api.firecrawl.dev/v2/search", service_key("firecrawl"), {"query": f'"{query}" Google Maps Brasil', "limit": 10, "country": "BR"}, timeout=18)
+                if not result.get("success", True): raise ValueError("A pesquisa na web não foi concluída")
+                seen = set()
+                for item in (result.get("data") or {}).get("web") or []:
+                    url = clean_url(item.get("url") or (item.get("metadata") or {}).get("url"))
+                    if not is_google_maps_url(url) or url in seen: continue
+                    seen.add(url)
+                    web_candidates.append({"name": str(item.get("title") or "Empresa no Google Maps")[:200], "address": str(item.get("description") or "")[:400], "url": url})
+                    if len(web_candidates) >= 8: break
+            except urllib.error.HTTPError as exc:
+                web_error = "Firecrawl limitou a pesquisa. Aguarde e tente novamente." if exc.code == 429 else "Não foi possível pesquisar no Firecrawl agora."
+            except (OSError, TimeoutError, ValueError, KeyError, TypeError):
+                web_error = "Não foi possível pesquisar no Firecrawl agora."
+        return self.send({"items": rows, "web_candidates": web_candidates, "web_available": bool(service_key("firecrawl")), "web_error": web_error, "query": query})
+
     def local_detail(self, lead_id):
         with db() as con:
             lead = rowdict(con.execute("SELECT id,name,category,city,state,address,phone,website,instagram,maps_url,rating,reviews_count,stage,digital_status,score,offer,amount FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone())
@@ -1516,11 +1570,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def save_review_qr(self, lead_id):
         destination = str(self.json_body().get("destination") or "").strip()
-        parsed = urllib.parse.urlsplit(destination)
-        host = (parsed.hostname or "").lower()
-        allowed = host in ("g.page", "maps.app.goo.gl", "google.com", "www.google.com", "search.google.com")
-        valid_path = (host == "maps.app.goo.gl" and bool(parsed.path.strip("/"))) or (host == "g.page" and parsed.path.startswith("/r/")) or (host in ("google.com", "www.google.com", "search.google.com") and (parsed.path == "/maps" or parsed.path.startswith(("/maps/", "/local/", "/search"))))
-        if len(destination) > 1000 or not allowed or not valid_path or parsed.scheme != "https" or parsed.username or parsed.password or parsed.port:
+        if len(destination) > 1000 or not is_google_maps_url(destination):
             raise ApiError("Cole um link HTTPS do perfil ou avaliações no Google (google.com/maps, g.page/r ou maps.app.goo.gl)")
         with db() as con:
             if not con.execute("SELECT 1 FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone(): raise ApiError("Empresa não encontrada", 404)
@@ -1530,6 +1580,44 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 con.execute("INSERT INTO review_qr(lead_id,token,destination,created_at,updated_at) VALUES(?,?,?,?,?)", (lead_id, secrets.token_urlsafe(24), destination, now(), now()))
         return self.get_review_qr(lead_id)
+
+    def create_review_qr(self):
+        body = self.json_body()
+        destination = str(body.get("destination") or body.get("maps_url") or "").strip()[:1000]
+        if not is_google_maps_url(destination):
+            raise ApiError("Selecione um resultado válido do Google Maps ou cole o link HTTPS da empresa")
+        lead_id = body.get("lead_id")
+        name = str(body.get("name") or "").strip()[:200]
+        city = str(body.get("city") or "").strip()[:100]
+        state = str(body.get("state") or "").strip()[:2].upper()
+        address = str(body.get("address") or "").strip()[:300]
+        with db() as con:
+            lead = None
+            if lead_id is not None:
+                try: lead_id = int(lead_id)
+                except (ValueError, TypeError): raise ApiError("Empresa selecionada inválida")
+                lead = con.execute("SELECT id,name FROM leads WHERE id=? AND blocked=0", (lead_id,)).fetchone()
+                if not lead: raise ApiError("Empresa não encontrada ou bloqueada", 404)
+            else:
+                lead = con.execute("SELECT id,name FROM leads WHERE maps_url=? AND blocked=0 ORDER BY id DESC LIMIT 1", (destination,)).fetchone()
+                if lead:
+                    lead_id = lead["id"]
+                else:
+                    if not name:
+                        slug = urllib.parse.unquote(urllib.parse.urlsplit(destination).path.rsplit("/", 1)[-1]).replace("+", " ")
+                        name = re.sub(r"[-_]+", " ", slug).strip(" ?")[:200] or "Empresa no Google Maps (revisar)"
+                    lead_id, _created = upsert_lead(con, {"name": name, "city": city, "state": state, "address": address, "maps_url": destination}, source="nfc_qr")
+                    if not lead_id: raise ApiError("Não foi possível salvar esta empresa no CRM")
+            existing = con.execute("SELECT token FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone()
+            if existing:
+                con.execute("UPDATE review_qr SET destination=?,updated_at=? WHERE lead_id=?", (destination, now(), lead_id))
+                token = existing["token"]
+            else:
+                token = secrets.token_urlsafe(24)
+                con.execute("INSERT INTO review_qr(lead_id,token,destination,created_at,updated_at) VALUES(?,?,?,?,?)", (lead_id, token, destination, now(), now()))
+            saved = rowdict(con.execute("SELECT name,category,city,state,address,maps_url FROM leads WHERE id=?", (lead_id,)).fetchone())
+            qr = rowdict(con.execute("SELECT token,destination,scans,updated_at FROM review_qr WHERE lead_id=?", (lead_id,)).fetchone())
+        return self.send({"lead_id": lead_id, "lead": saved, "qr": qr}, 201)
 
     def review_redirect(self, token):
         with db() as con:
