@@ -6,6 +6,10 @@ from server import Handler, init_db
 import os
 
 app = Flask(__name__)
+# Bump this whenever the embedded mobile shell changes. Vercel's Python
+# function bundler may otherwise reuse a previous function bundle because
+# static assets are read dynamically by server.py.
+STATIC_RELEASE = "2026-09-30-mobilefix2"
 _ready = False
 _lock = threading.Lock()
 
