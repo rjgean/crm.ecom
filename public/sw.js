@@ -1,5 +1,5 @@
 'use strict';
-const CACHE = 'crm-shell-v2';
+const CACHE = 'crm-shell-v5';
 const SHELL = ['/', '/app.js', '/styles.css', '/favicon.svg', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
