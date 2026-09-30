@@ -1,4 +1,30 @@
 const root = document.getElementById('app');
+
+/* Mobile viewport guard: older wide layouts could leave Android browsers with a
+   persisted horizontal scroll offset. Reset every scroll container that can
+   own that offset without touching the user's vertical position. */
+function resetHorizontalViewport(){
+  if(window.innerWidth>767)return;
+  const y=window.scrollY||document.documentElement.scrollTop||document.body.scrollTop||0;
+  try{window.scrollTo(0,y)}catch{}
+  const scrolling=document.scrollingElement;
+  if(scrolling)scrolling.scrollLeft=0;
+  document.documentElement.scrollLeft=0;
+  document.body.scrollLeft=0;
+  for(const selector of ['#app','.shell','.main','.page']){
+    const el=document.querySelector(selector);
+    if(el)el.scrollLeft=0;
+  }
+}
+function settleMobileViewport(){
+  resetHorizontalViewport();
+  requestAnimationFrame(()=>{resetHorizontalViewport();requestAnimationFrame(resetHorizontalViewport)});
+}
+window.addEventListener('pageshow',settleMobileViewport,{passive:true});
+window.addEventListener('load',settleMobileViewport,{passive:true});
+window.addEventListener('orientationchange',()=>setTimeout(settleMobileViewport,120),{passive:true});
+window.addEventListener('resize',settleMobileViewport,{passive:true});
+
 const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), theme: (()=>{try{return localStorage.getItem('crm-theme')==='dark'?'dark':'light'}catch{return 'light'}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, navScrollTop: 0, batchId: null, importPoll: null, campaignPoll: null, campaignAdvancing: false, localPoll: null, localLeadId: null, localTab: 'radar', localData: null, localSearch: '', reviewQrSearch:'', reviewQrResults:null, reviewQrCreated:null, crmLayout: (()=>{try{return localStorage.getItem('crm-layout')==='list'?'list':'board'}catch{return 'board'}})(), crmTab:'pipeline', crmScripts:[], crmScriptStage:'contato', crmScriptKey:'price', siteLeadId:0, sitePlatform:'lovable', agendaMonth:new Date(new Date().getFullYear(),new Date().getMonth(),1), agendaDay:new Date().toLocaleDateString('en-CA'), appointments:[], customNiches: [], nicheVisibleCount: 60, radarFilters: {city:'',niche:'',state:'',min_rating:'',max_reviews:''} };
 document.documentElement.dataset.theme=state.theme;
 const iconPaths={
@@ -129,6 +155,7 @@ async function renderView() {
   try {
     await ({painel:dashboard,buscar:searchPage,importar:importPage,leads:leadsPage,listas:listsPage,crm:crmPage,nichos:nichesPage,local:localPage,mensagens:messagesPage,historico:historyPage,exportacoes:exportPage,analytics:analyticsPage,integracoes:integrationsPage,configuracoes:settingsPage})[state.view]();
   } catch(err) { failure(err); }
+  finally { settleMobileViewport(); }
 }
 function metric(name,value){return `<div class="metric"><div class="metric-label">${esc(name)}</div><div class="metric-value">${esc(value)}</div></div>`}
 function scoreBadge(value){return `<span class="score" title="Indicador interno para ajudar a priorizar oportunidades"><small>Score do lead</small><strong>${esc(value)}/100</strong></span>`}
