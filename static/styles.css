@@ -409,35 +409,3 @@ html,.nav,.kanban,.drawer,.page,textarea{scrollbar-color:var(--scroll-thumb) var
   .dash-stat{min-height:118px}
   .dock-link{font-size:9px}
 }
-
-
-/* Hard mobile overflow containment. Keep the visual viewport aligned at x=0. */
-@media(max-width:767px){
-  html,body{width:100% !important;max-width:100% !important;overflow-x:hidden !important}
-  body{position:relative}
-  #app,.shell,.main,.page,.dash-page{
-    width:100% !important;
-    max-width:100% !important;
-    min-width:0 !important;
-    margin-left:0 !important;
-    margin-right:0 !important;
-    overflow-x:hidden !important
-  }
-  .shell{position:relative}
-  .page>*{max-width:100%;min-width:0}
-  .dash-grid,.dash-stats,.metrics,.two-col,.lead-grid,.campaign-list,
-  .dash-panel,.dash-stat,.panel,.metric,.lead-card,.campaign-card{
-    box-sizing:border-box;
-    max-width:100% !important;
-    min-width:0 !important
-  }
-  .mobile-dock{
-    width:auto !important;
-    max-width:none !important;
-    transform:none !important
-  }
-  .mobile-dock,.topbar{
-    left:0 !important;
-    right:0 !important
-  }
-}
