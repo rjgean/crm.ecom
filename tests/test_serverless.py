@@ -1,6 +1,7 @@
 """Exercise request-driven campaigns without a persistent background worker."""
 import os
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,13 @@ import server
 
 
 class ServerlessCampaignTests(unittest.TestCase):
+    def test_vercel_runtime_dependencies_include_every_requirements_package(self):
+        root = Path(__file__).resolve().parents[1]
+        pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+        declared = {item.split("==", 1)[0].lower() for item in pyproject["project"]["dependencies"]}
+        requirements = {line.split("==", 1)[0].lower() for line in (root / "requirements.txt").read_text().splitlines() if line.strip()}
+        self.assertFalse(requirements - declared, f"Vercel dependencies missing from pyproject.toml: {requirements - declared}")
+
     def test_turso_marketplace_prefixed_credentials(self):
         with patch.dict(os.environ, {
             "crmecom_TURSO_DATABASE_URL": "libsql://example.turso.io",
