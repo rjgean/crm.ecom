@@ -83,5 +83,11 @@
         }
       ]
     }
-  ]
+  ],
+  "functions": {
+    "app.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{public/**,static/**,tests/**,schema/**,README.md,migrate_turso_to_supabase.py}"
+    }
+  }
 }
