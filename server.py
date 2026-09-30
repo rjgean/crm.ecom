@@ -1788,7 +1788,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def list_saved_niches(self):
         with db() as con:
-            rows = [dict(row) for row in con.execute("SELECT id,name,category,created_at,updated_at FROM saved_niches ORDER BY category COLLATE NOCASE,name COLLATE NOCASE")]
+            rows = [dict(row) for row in con.execute("SELECT id,name,category,created_at,updated_at FROM saved_niches ORDER BY LOWER(category),LOWER(name)")]
         return self.send(rows)
 
     def create_saved_niche(self):

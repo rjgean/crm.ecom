@@ -84,6 +84,11 @@ class CRMTests(unittest.TestCase):
         status, rows = self.request("GET", "/niches")
         self.assertEqual(status, 200)
         self.assertTrue(any(row["id"] == niche_id for row in rows))
+        self.request("POST", "/niches", {"name":"Teste Zeta", "category":"Zeta"})
+        self.request("POST", "/niches", {"name":"Teste Alpha", "category":"Alpha"})
+        _, sorted_rows = self.request("GET", "/niches")
+        names = [row["name"] for row in sorted_rows]
+        self.assertLess(names.index("Teste Alpha"), names.index("Teste Zeta"))
         status, updated = self.request("PATCH", f"/niches/{niche_id}", {"name":"Harmonização facial", "category":"Serviços locais"})
         self.assertEqual(status, 200)
         self.assertEqual((updated["name"], updated["category"]), ("Harmonização facial", "Serviços locais"))
