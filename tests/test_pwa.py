@@ -87,6 +87,13 @@ class PWATests(unittest.TestCase):
         self.assertIn(".lead-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))", styles)
         self.assertIn(".lead-actions .btn{flex:1 1 108px;min-height:38px", styles)
 
+    def test_local_review_tool_is_labeled_nfc_qr_and_has_mobile_copy_guidance(self):
+        script = (ROOT / "static" / "app.js").read_text()
+        self.assertIn("['qr','qr','NFC/QR'", script)
+        self.assertIn("Copiar link NFC/QR", script)
+        self.assertIn("grave como URL em uma etiqueta compatível usando um aplicativo NFC no celular", script)
+        self.assertIn("Google Maps", script[script.index("function reviewQrPage"):script.index("async function crmPage")])
+
     def test_sidebar_scroll_position_survives_section_navigation(self):
         script = (ROOT / "static" / "app.js").read_text()
         self.assertIn("navScrollTop: 0", script)
