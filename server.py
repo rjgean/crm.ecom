@@ -18,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -171,7 +172,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'collaborator');
         CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), csrf TEXT NOT NULL, expires_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
-        CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY, niche TEXT NOT NULL, city TEXT NOT NULL, state TEXT NOT NULL, limit_count INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'queued', apify_run_id TEXT, dataset_id TEXT, found INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY, niche TEXT NOT NULL, city TEXT NOT NULL, district TEXT NOT NULL DEFAULT '', state TEXT NOT NULL, limit_count INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'queued', apify_run_id TEXT, dataset_id TEXT, found INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, enriched INTEGER NOT NULL DEFAULT 0, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS saved_niches(id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS saved_niches_name_unique ON saved_niches(LOWER(name));
         CREATE TABLE IF NOT EXISTS leads(
             id INTEGER PRIMARY KEY, external_id TEXT UNIQUE, name TEXT NOT NULL, name_key TEXT NOT NULL, category TEXT, city TEXT, state TEXT, address TEXT,
             phone TEXT, phone_digits TEXT, website TEXT, instagram TEXT, facebook TEXT, marketplace TEXT, maps_url TEXT,
@@ -217,6 +220,9 @@ def init_db():
         user_columns = {row[1] for row in con.execute("PRAGMA table_info(users)")}
         if "role" not in user_columns:
             con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'collaborator'")
+        campaign_columns = {row[1] for row in con.execute("PRAGMA table_info(campaigns)")}
+        if "district" not in campaign_columns:
+            con.execute("ALTER TABLE campaigns ADD COLUMN district TEXT NOT NULL DEFAULT ''")
         con.execute("UPDATE users SET role='admin' WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) AND NOT EXISTS (SELECT 1 FROM users WHERE role='admin')")
         bootstrap_operator(con)
         if not os.environ.get("VERCEL"):
@@ -286,9 +292,10 @@ def request_json(url, token, payload=None, timeout=35):
 
 
 def apify_actor_input(campaign):
+    location = ", ".join(part for part in (campaign["city"], campaign.get("district"), campaign["state"], "Brasil") if part)
     return {
         "searchStringsArray": [campaign["niche"]],
-        "locationQuery": f'{campaign["city"]}, {campaign["state"]}, Brasil',
+        "locationQuery": location,
         "maxCrawledPlacesPerSearch": campaign["limit_count"],
         "language": "pt-BR",
         "maxReviews": 0,
@@ -795,6 +802,7 @@ class Handler(BaseHTTPRequestHandler):
                 if user.get("sso"): raise ApiError("O e-mail é gerenciado pela Vercel", 404)
                 return self.change_email(user)
             if method == "GET" and path == "/api/dashboard": return self.dashboard()
+            if method == "GET" and path == "/api/usage": return self.usage()
             if method == "GET" and path == "/api/leads": return self.leads()
             if method == "GET" and path == "/api/local/summary": return self.local_summary()
             if method == "GET" and path == "/api/local/radar": return self.local_radar()
@@ -850,6 +858,12 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/api/campaigns":
                 with db() as con: return self.send([dict(x) for x in con.execute("SELECT * FROM campaigns ORDER BY id DESC LIMIT 100")])
             if method == "POST" and path == "/api/campaigns": return self.create_campaign()
+            if path == "/api/niches":
+                if method == "GET": return self.list_saved_niches()
+                if method == "POST": return self.create_saved_niche()
+            match = re.fullmatch(r"/api/niches/(\d+)", path)
+            if match and method == "PATCH": return self.update_saved_niche(int(match[1]))
+            if match and method == "DELETE": return self.delete_saved_niche(int(match[1]))
             match = re.fullmatch(r"/api/campaigns/(\d+)/advance", path)
             if method == "POST" and match: return self.send(advance_campaign(int(match[1])))
             match = re.fullmatch(r"/api/campaigns/(\d+)/resume", path)
@@ -1109,6 +1123,12 @@ class Handler(BaseHTTPRequestHandler):
             cities = [dict(x) for x in con.execute("SELECT city,COUNT(*) count FROM leads WHERE blocked=0 AND city IS NOT NULL AND city<>'' GROUP BY city ORDER BY count DESC LIMIT 5")]
             return self.send({"metrics": counts, "recent": recent, "activity": activity, "stages": stages, "niches": niches, "digital": digital, "cities": cities})
 
+    def usage(self):
+        month_start = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(day=1,hour=0,minute=0,second=0,microsecond=0).astimezone(timezone.utc).isoformat(timespec="seconds")
+        with db() as con:
+            count = con.execute("SELECT COUNT(*) FROM leads WHERE blocked=0 AND created_at>=?", (month_start,)).fetchone()[0]
+        return self.send({"leads_this_month": int(count), "monthly_goal": 40})
+
     def leads(self):
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         clauses = ["blocked=0"]
@@ -1118,6 +1138,16 @@ class Handler(BaseHTTPRequestHandler):
             params.extend(["%" + q["q"][0][:100] + "%"] * 3)
         for field in ("stage", "digital_status", "city", "category"):
             if q.get(field) and q[field][0]: clauses.append(f"{field}=?"); params.append(q[field][0][:100])
+        if q.get("no_site") == ["1"]:
+            clauses.append("digital_status IN ('sem_site_identificado','apenas_redes')")
+        if q.get("tier") == ["3"]: clauses.append("score>=70")
+        if q.get("tier") == ["2"]: clauses.append("score>=50 AND score<70")
+        if q.get("score_min") and q["score_min"][0].isdigit():
+            clauses.append("score>=?"); params.append(min(100,int(q["score_min"][0])))
+        if q.get("with_phone") == ["1"]: clauses.append("phone_digits IS NOT NULL AND phone_digits<>''")
+        if q.get("campaign_id") and q["campaign_id"][0].isdigit():
+            clauses.append("campaign_id=?")
+            params.append(int(q["campaign_id"][0]))
         if q.get("list_id") and q["list_id"][0].isdigit():
             clauses.append("id IN (SELECT lead_id FROM list_items WHERE list_id=?)")
             params.append(int(q["list_id"][0]))
@@ -1588,15 +1618,52 @@ class Handler(BaseHTTPRequestHandler):
 
     def create_campaign(self):
         body = self.json_body()
-        niche, city, state = (str(body.get(k, "")).strip() for k in ("niche", "city", "state"))
-        if not niche or not city or not state or any(len(x) > 100 for x in (niche, city, state)): raise ApiError("Informe segmento, cidade e UF")
+        niche, city, district, state = (str(body.get(k, "")).strip() for k in ("niche", "city", "district", "state"))
+        if not niche or not city or not state or any(len(x) > limit for x,limit in ((niche,100),(city,100),(district,100),(state,2))): raise ApiError("Informe segmento, cidade e UF")
         if not service_key("apify"): raise ApiError("Configure APIFY_TOKEN no servidor antes de iniciar a busca")
         try: limit = int(body.get("limit", 20))
         except (ValueError, TypeError): raise ApiError("Limite inválido")
         if not 1 <= limit <= 100: raise ApiError("Use um limite de 1 a 100 empresas")
-        with db() as con: cur = con.execute("INSERT INTO campaigns(niche,city,state,limit_count,created_at,updated_at) VALUES(?,?,?,?,?,?)", (niche, city, state.upper()[:2], limit, now(), now()))
+        with db() as con: cur = con.execute("INSERT INTO campaigns(niche,city,district,state,limit_count,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (niche, city, district, state.upper(), limit, now(), now()))
         if not os.environ.get("VERCEL"): WORKER_WAKE.set()
         return self.send({"id": cur.lastrowid, "status": "queued"}, 201)
+
+    def list_saved_niches(self):
+        with db() as con:
+            rows = [dict(row) for row in con.execute("SELECT id,name,category,created_at,updated_at FROM saved_niches ORDER BY category COLLATE NOCASE,name COLLATE NOCASE")]
+        return self.send(rows)
+
+    def create_saved_niche(self):
+        body = self.json_body()
+        name = str(body.get("name") or "").strip()
+        category = str(body.get("category") or "Meus nichos").strip()
+        if not name or len(name) > 100: raise ApiError("Informe um nicho com até 100 caracteres")
+        if not category or len(category) > 80: raise ApiError("Informe um grupo com até 80 caracteres")
+        with db() as con:
+            if any(str(row[0]).casefold() == name.casefold() for row in con.execute("SELECT name FROM saved_niches")): raise ApiError("Esse nicho já está na sua biblioteca", 409)
+            created = now()
+            cur = con.execute("INSERT INTO saved_niches(name,category,created_at,updated_at) VALUES(?,?,?,?)", (name,category,created,created))
+            row = con.execute("SELECT id,name,category,created_at,updated_at FROM saved_niches WHERE id=?", (cur.lastrowid,)).fetchone()
+        return self.send(dict(row), 201)
+
+    def update_saved_niche(self, niche_id):
+        body = self.json_body()
+        name = str(body.get("name") or "").strip()
+        category = str(body.get("category") or "Meus nichos").strip()
+        if not name or len(name) > 100: raise ApiError("Informe um nicho com até 100 caracteres")
+        if not category or len(category) > 80: raise ApiError("Informe um grupo com até 80 caracteres")
+        with db() as con:
+            if not con.execute("SELECT 1 FROM saved_niches WHERE id=?", (niche_id,)).fetchone(): raise ApiError("Nicho não encontrado", 404)
+            if any(int(row[1]) != niche_id and str(row[0]).casefold() == name.casefold() for row in con.execute("SELECT name,id FROM saved_niches")): raise ApiError("Já existe outro nicho com esse nome", 409)
+            con.execute("UPDATE saved_niches SET name=?,category=?,updated_at=? WHERE id=?", (name,category,now(),niche_id))
+            row = con.execute("SELECT id,name,category,created_at,updated_at FROM saved_niches WHERE id=?", (niche_id,)).fetchone()
+        return self.send(dict(row))
+
+    def delete_saved_niche(self, niche_id):
+        with db() as con:
+            if not con.execute("SELECT 1 FROM saved_niches WHERE id=?", (niche_id,)).fetchone(): raise ApiError("Nicho não encontrado", 404)
+            con.execute("DELETE FROM saved_niches WHERE id=?", (niche_id,))
+        return self.send({"deleted": True})
 
     def get_lists(self):
         with db() as con: return self.send([dict(x) for x in con.execute("SELECT l.id,l.name,COUNT(i.lead_id) count FROM lead_lists l LEFT JOIN list_items i ON l.id=i.list_id GROUP BY l.id ORDER BY l.id DESC")])

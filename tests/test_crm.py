@@ -63,6 +63,57 @@ class CRMTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("objeto JSON", value["error"])
 
+    def test_leads_can_be_filtered_by_campaign(self):
+        self.login()
+        _, first = self.request("POST", "/leads", {"name":"Campanha Loja A", "category":"Moda", "city":"Niterói", "state":"RJ"})
+        _, second = self.request("POST", "/leads", {"name":"Lead fora da campanha", "category":"Moda", "city":"Niterói", "state":"RJ"})
+        with server.db() as con:
+            campaign_id = con.execute("INSERT INTO campaigns(niche,city,state,limit_count,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", ("Moda feminina", "Niterói", "RJ", 20, "done", server.now(), server.now())).lastrowid
+            con.execute("UPDATE leads SET campaign_id=? WHERE id=?", (campaign_id, first["id"]))
+        status, result = self.request("GET", f"/leads?campaign_id={campaign_id}")
+        self.assertEqual(status, 200)
+        self.assertEqual([lead["id"] for lead in result["items"]], [first["id"]])
+        self.assertNotIn(second["id"], [lead["id"] for lead in result["items"]])
+
+    def test_custom_niche_library_supports_create_edit_delete(self):
+        self.login()
+        status, created = self.request("POST", "/niches", {"name":"Clínicas de harmonização", "category":"Saúde e bem-estar"})
+        self.assertEqual(status, 201)
+        niche_id = created["id"]
+        self.assertEqual(self.request("POST", "/niches", {"name":"clínicas de HARMONIZAÇÃO", "category":"Outro grupo"})[0], 409)
+        status, rows = self.request("GET", "/niches")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(row["id"] == niche_id for row in rows))
+        status, updated = self.request("PATCH", f"/niches/{niche_id}", {"name":"Harmonização facial", "category":"Serviços locais"})
+        self.assertEqual(status, 200)
+        self.assertEqual((updated["name"], updated["category"]), ("Harmonização facial", "Serviços locais"))
+        self.assertEqual(self.request("DELETE", f"/niches/{niche_id}")[0], 200)
+        self.assertEqual(self.request("DELETE", f"/niches/{niche_id}")[0], 404)
+
+    def test_crm_quick_filters_search_tiers_site_and_phone(self):
+        self.login()
+        leads=[]
+        for name,phone in (("Lead Nicho Quente","21987654321"),("Lead Nicho Morno",""),("Lead Nicho sem site","")):
+            _, lead=self.request("POST","/leads",{"name":name,"category":"Serviço segmentado","city":"Rio","phone":phone})
+            leads.append(lead["id"])
+        with server.db() as con:
+            con.execute("UPDATE leads SET score=80,digital_status='sem_site_identificado' WHERE id=?",(leads[0],))
+            con.execute("UPDATE leads SET score=55,digital_status='site_sem_loja' WHERE id=?",(leads[1],))
+            con.execute("UPDATE leads SET score=30,digital_status='apenas_redes' WHERE id=?",(leads[2],))
+        _, tier3=self.request("GET","/leads?tier=3")
+        self.assertIn(leads[0],[lead["id"] for lead in tier3["items"]])
+        _, tier2=self.request("GET","/leads?tier=2")
+        self.assertIn(leads[1],[lead["id"] for lead in tier2["items"]])
+        _, no_site=self.request("GET","/leads?no_site=1")
+        self.assertEqual({lead["id"] for lead in no_site["items"]}&set(leads),{leads[0],leads[2]})
+        _, with_phone=self.request("GET","/leads?with_phone=1")
+        self.assertIn(leads[0],[lead["id"] for lead in with_phone["items"]])
+        _, by_category=self.request("GET","/leads?q=segmentado")
+        self.assertIn(leads[0],[lead["id"] for lead in by_category["items"]])
+        _, usage=self.request("GET","/usage")
+        self.assertGreaterEqual(usage["leads_this_month"],3)
+        self.assertEqual(usage["monthly_goal"],40)
+
     def test_supabase_database_url_can_back_integration_encryption(self):
         env = {
             "CRM_CREDENTIALS_KEY": "",

@@ -159,6 +159,78 @@ html,.nav,.kanban,.drawer,.page,textarea{scrollbar-color:var(--scroll-thumb) var
 [data-theme=light] .row-item button:hover strong{color:#145bd7}
 [data-theme=light] .drawer,[data-theme=light] .drawer-top{background:#fff;color:#203544;border-color:#dce5ed}
 [data-theme=light] .kanban-card{background:#fff;color:#203544;border-color:#dce5ed}
+
+/* Visualizações do funil e filtro de leads por campanha. */
+.section-title .view-switch{display:flex;gap:8px;flex:none}
+.campaign-filter-panel{margin:0 0 18px}
+.campaign-filter-panel[hidden]{display:none}
+.campaign-filter-panel .panel-head{align-items:flex-start}
+.campaign-filter-panel .panel-head h2{margin:0 0 5px}
+.campaign-filter-panel .panel-head p{margin:0;max-width:620px}
+.campaign-filter-card{background:var(--card);border-radius:11px;padding:13px 15px}
+.campaign-filter-info{min-width:0;flex:1}
+.campaign-filter-info strong{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.campaign-filter-info small{font-size:11px}
+.crm-list-wrap{width:100%;overflow:auto;border:1px solid var(--line);border-radius:13px;background:var(--surface)}
+.crm-list{width:100%;min-width:900px;border-collapse:collapse;text-align:left}
+.crm-list th{position:sticky;top:0;padding:13px 14px;background:var(--card);color:var(--muted);font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}
+.crm-list td{padding:11px 14px;border-top:1px solid var(--line);font-size:12px;vertical-align:middle}
+.crm-list tbody tr:hover{background:color-mix(in srgb,var(--accent) 5%,var(--surface))}
+.crm-list td:first-child{min-width:190px}
+.crm-list td:first-child small{display:block;margin-top:4px;font-size:10px}
+.crm-company-link{border:0;background:transparent;color:var(--text,#eaf5f2);font-size:13px;font-weight:700;text-align:left;padding:0}
+.crm-company-link:hover{color:var(--accent)}
+.crm-stage-select{max-width:160px;min-height:34px;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:inherit;font-size:11px}
+.crm-list .score{min-width:86px;min-height:36px}
+[data-theme=light] .crm-company-link{color:#203544}
+[data-theme=light] .campaign-filter-card{background:#f6f9fa}
+@media(max-width:650px){.section-title .view-switch{width:100%}.section-title .view-switch .btn{flex:1}.campaign-filter-panel .panel-head{gap:6px}.campaign-filter-card{align-items:flex-start;flex-direction:column}.campaign-filter-card .btn{width:100%}.crm-list-wrap{border-radius:10px}}
+.niche-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:-5px}
+.niche-tools .help{flex:1 1 100%;margin:0}
+.niche-overlay{position:fixed;inset:0;z-index:100;background:#061114c9;display:grid;place-items:center;padding:20px}
+.niche-dialog{width:min(100%,760px);max-height:min(88vh,850px);overflow:auto;padding:24px;border:1px solid var(--line);border-radius:18px;background:var(--surface);box-shadow:0 28px 100px #0008;color:inherit}
+.niche-dialog>header{display:flex;align-items:flex-start;gap:16px;margin-bottom:18px}
+.niche-dialog>header>div{flex:1;min-width:0}
+.niche-dialog h2{margin:6px 0}
+.niche-dialog .icon-button{width:36px;height:36px;flex:none;border:1px solid var(--line);border-radius:9px;background:var(--card);color:inherit;font-size:22px}
+.niche-picker-tools{display:grid;grid-template-columns:1.4fr 1fr;gap:10px}
+.niche-result-count{padding:12px 2px 8px;color:var(--muted);font-size:11px}
+.niche-results{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;max-height:46vh;overflow:auto;padding:2px 2px 10px}
+.niche-option{display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:inherit;min-width:0}
+.niche-option:hover,.niche-option:focus-visible{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,var(--surface));outline:none}
+.niche-option strong{font-size:12px;overflow-wrap:anywhere}
+.niche-option small{font-size:10px;text-align:left}
+.niche-edit-form{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.niche-edit-form .button-row{grid-column:1/-1}
+.niche-manager-list{margin-top:20px}
+.niche-manager-list .panel-head{align-items:baseline}
+.niche-manager-list .panel-head h3{margin:0}
+.niche-manager-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.niche-manager-row>div:first-child{min-width:0}
+.niche-manager-row strong,.niche-manager-row small{display:block;overflow-wrap:anywhere}
+.niche-manager-row small{margin-top:4px}
+.niche-manager-row .button-row{flex:none}
+[data-theme=light] .niche-dialog{background:#fff;color:#203544}
+[data-theme=light] .niche-option,[data-theme=light] .niche-edit-form{background:#f6f9fa}
+@media(max-width:600px){.niche-overlay{padding:10px}.niche-dialog{padding:17px;max-height:92vh}.niche-picker-tools,.niche-edit-form{grid-template-columns:1fr}.niche-results{grid-template-columns:1fr;max-height:44vh}.niche-edit-form .button-row{grid-column:auto}.niche-manager-row{align-items:flex-start;flex-direction:column}.niche-manager-row .button-row{width:100%}.niche-manager-row .btn{flex:1}}
+.monthly-usage{display:grid;grid-template-columns:minmax(220px,1fr) minmax(130px,280px);align-items:center;gap:24px;margin:0 0 16px;padding:16px 20px;border:1px solid var(--line);border-radius:13px;background:var(--surface)}
+.monthly-usage>div:first-child{display:grid;gap:4px}
+.monthly-usage strong{font-size:16px}
+.monthly-usage small{font-size:10px;color:var(--muted)}
+.usage-track{height:9px;overflow:hidden;border-radius:8px;background:var(--card)}
+.usage-track span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#3985d5,#64d8bb);transition:width .3s ease}
+.crm-toolbar{display:flex;align-items:center;gap:9px;margin:16px 0 11px}
+.crm-search-box{display:flex;align-items:center;gap:9px;min-width:160px;flex:1;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--muted)}
+.crm-search-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 14%,transparent)}
+.crm-search-box input{width:100%;min-width:0;height:41px;border:0;outline:0;background:transparent;color:inherit;font-size:12px}
+.crm-quick-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.crm-filter-chip{padding:7px 11px;border:1px solid var(--line);border-radius:100px;background:var(--surface);color:var(--muted);font-size:11px;font-weight:700}
+.crm-filter-chip:hover{border-color:var(--accent);color:var(--accent)}
+.crm-filter-chip.active{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--surface));color:var(--accent)}
+.crm-results-count{min-height:20px;margin-bottom:8px;color:var(--muted);font-size:11px}
+[data-theme=light] .monthly-usage{background:#fff}
+[data-theme=light] .crm-search-box{background:#fff}
+@media(max-width:650px){.monthly-usage{grid-template-columns:1fr;gap:12px;padding:14px}.crm-toolbar{flex-wrap:wrap}.crm-search-box{flex-basis:100%}.crm-toolbar>.btn{flex:1}.crm-quick-filters{gap:6px}.crm-filter-chip{font-size:10px;padding:7px 9px}}
 [data-theme=light] .column{background:#f5f8fb}
 [data-theme=light] .column-head{color:#294356}
 [data-theme=light] .tag{background:#eef4ff;color:#145bd7;border-color:#d4e2fb}

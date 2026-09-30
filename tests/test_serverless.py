@@ -43,6 +43,11 @@ class ServerlessCampaignTests(unittest.TestCase):
             self.assertEqual([step["status"] for step in steps], ["running", "enriching", "enriching", "done"])
             self.assertEqual((steps[-1]["found"], steps[-1]["saved"], steps[-1]["enriched"]), (1, 1, 1))
 
+    def test_campaign_location_includes_optional_district(self):
+        request=server.apify_actor_input({"niche":"Moda feminina","city":"São Gonçalo","district":"Alcântara","state":"RJ","limit_count":12})
+        self.assertEqual(request["locationQuery"],"São Gonçalo, Alcântara, RJ, Brasil")
+        self.assertEqual(request["maxCrawledPlacesPerSearch"],12)
+
 
 if __name__ == "__main__":
     unittest.main()
