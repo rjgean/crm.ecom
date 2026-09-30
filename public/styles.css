@@ -252,3 +252,25 @@ html,.nav,.kanban,.drawer,.page,textarea{scrollbar-color:var(--scroll-thumb) var
 @media(max-width:390px){.dash-stats{grid-template-columns:1fr 1fr}.dash-stat{min-height:132px}.dash-stat>strong{font-size:23px}.local-modules{grid-template-columns:1fr}.mobile-dock{padding-left:4px;padding-right:4px}.dock-link{font-size:9px}}
 @media(prefers-reduced-motion:reduce){.local-module:hover,.theme-toggle:hover{transform:none}}
 .access-management{margin-top:16px}.access-list{display:grid;gap:10px}.access-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}.access-row>div{min-width:0;display:grid;gap:4px}.access-row strong{overflow-wrap:anywhere}.access-row small{color:var(--muted)}
+
+.crm-workspace-tabs{display:flex;gap:7px;overflow-x:auto;padding:3px 2px 13px;margin-bottom:18px;border-bottom:1px solid var(--line);scrollbar-width:thin}
+.crm-workspace-tab{flex:none;border:1px solid transparent;border-radius:9px;padding:9px 14px;background:transparent;color:var(--muted);font-size:12px;font-weight:700}
+.crm-workspace-tab:hover{background:color-mix(in srgb,var(--accent) 8%,var(--surface));color:var(--text,#203544)}
+.crm-workspace-tab.active{border-color:color-mix(in srgb,var(--accent) 35%,var(--line));background:color-mix(in srgb,var(--accent) 12%,var(--surface));color:var(--accent)}
+.objection-editor-form{display:grid;gap:14px;margin-top:18px}.objection-editor-form textarea{min-height:260px;line-height:1.65}
+.site-workspace-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.site-lead-summary{margin-top:15px;padding:14px;border:1px solid var(--line);border-radius:11px;background:var(--card);display:flex;justify-content:space-between;align-items:center;gap:12px}
+.site-lead-summary strong,.site-lead-summary small{display:block}.site-lead-summary small{margin-top:4px;color:var(--muted);font-size:11px}
+.agenda-heading{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:17px}.agenda-heading h2{margin:4px 0}.agenda-month-tools{display:flex;gap:10px;align-items:center}.agenda-month-tools strong{text-transform:capitalize;min-width:150px;text-align:center;font-size:14px}
+.calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}.calendar-weekdays{margin-bottom:5px;text-align:center;color:var(--muted);font-size:10px;font-weight:700}
+.calendar-day{display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:0;min-height:98px;padding:7px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:inherit;text-align:left;overflow:hidden}
+.calendar-day>span{font-size:12px;font-weight:700}.calendar-day small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 5px;border-radius:5px;background:color-mix(in srgb,var(--accent) 13%,var(--surface));color:var(--accent);font-size:9px}
+.calendar-day:hover,.calendar-day.selected{border-color:var(--accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 25%,transparent)}.calendar-day.outside{opacity:.45}
+.agenda-columns{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(310px,.9fr);gap:15px;margin-top:15px;align-items:start}
+.appointment-card{display:grid;grid-template-columns:64px minmax(0,1fr);gap:13px;padding:14px 0;border-bottom:1px solid var(--line)}.appointment-time{font-size:15px;font-weight:700;color:var(--accent)}.appointment-time small{display:block;margin-top:4px;font-size:10px;font-weight:500}
+.appointment-info{min-width:0}.appointment-info strong,.appointment-info small{display:block}.appointment-info strong{font-size:13px}.appointment-info>small{margin-top:3px}.appointment-info p{margin:8px 0;font-size:11px;color:var(--muted);white-space:pre-wrap}
+.appointment-actions{grid-column:2;display:flex;gap:6px;flex-wrap:wrap}.appointment-actions .btn{padding:7px 9px;font-size:10px;min-height:34px}
+.agenda-form-panel .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.agenda-form-panel .form-grid .span2{grid-column:span 2}
+[data-theme=light] .site-lead-summary{background:#f6f9fb}
+@media(max-width:800px){.agenda-columns{grid-template-columns:1fr}.agenda-form-panel .form-grid{grid-template-columns:1fr}.agenda-form-panel .form-grid .span2{grid-column:span 1}}
+@media(max-width:580px){.crm-workspace-tabs{margin-right:-2px}.crm-workspace-tab{padding:9px 12px}.site-workspace-grid{grid-template-columns:1fr}.agenda-heading{align-items:flex-start;flex-direction:column}.agenda-month-tools{width:100%;justify-content:space-between}.calendar-grid{gap:3px}.calendar-day{min-height:66px;padding:4px;border-radius:7px}.calendar-day small{padding:2px;font-size:8px}.calendar-weekdays{font-size:9px}.appointment-card{grid-template-columns:48px minmax(0,1fr);gap:8px}.appointment-actions{grid-column:1/-1}.site-lead-summary{align-items:flex-start;flex-direction:column}}

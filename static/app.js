@@ -1,5 +1,5 @@
 const root = document.getElementById('app');
-const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), theme: (()=>{try{return localStorage.getItem('crm-theme')==='dark'?'dark':'light'}catch{return 'light'}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, navScrollTop: 0, batchId: null, importPoll: null, campaignPoll: null, campaignAdvancing: false, localPoll: null, localLeadId: null, localTab: 'radar', localData: null, localSearch: '', crmLayout: (()=>{try{return localStorage.getItem('crm-layout')==='list'?'list':'board'}catch{return 'board'}})(), crmFilters: {q:'',quick:'all'}, customNiches: [], nicheVisibleCount: 60, radarFilters: {city:'',niche:'',state:'',min_rating:'',max_reviews:''} };
+const state = { sidebarCollapsed: (()=>{try{return localStorage.getItem('crm-sidebar-collapsed')==='1'}catch{return false}})(), theme: (()=>{try{return localStorage.getItem('crm-theme')==='dark'?'dark':'light'}catch{return 'light'}})(), user: null, authConfig: null, view: 'painel', lead: null, leads: [], filters: {}, toastTimer: null, drawerOpen: false, navScrollTop: 0, batchId: null, importPoll: null, campaignPoll: null, campaignAdvancing: false, localPoll: null, localLeadId: null, localTab: 'radar', localData: null, localSearch: '', crmLayout: (()=>{try{return localStorage.getItem('crm-layout')==='list'?'list':'board'}catch{return 'board'}})(), crmTab:'pipeline', crmScripts:[], crmScriptStage:'contato', crmScriptKey:'price', siteLeadId:0, sitePlatform:'lovable', agendaMonth:new Date(new Date().getFullYear(),new Date().getMonth(),1), agendaDay:new Date().toLocaleDateString('en-CA'), appointments:[], customNiches: [], nicheVisibleCount: 60, radarFilters: {city:'',niche:'',state:'',min_rating:'',max_reviews:''} };
 document.documentElement.dataset.theme=state.theme;
 const iconPaths={
   dashboard:'<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/>',
@@ -39,7 +39,7 @@ if('serviceWorker' in navigator){
   if(location.protocol==='https:')window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 }
 if(!navigator.onLine)document.documentElement.classList.add('is-offline');
-const stages = [['novo','Novo'],['pesquisado','Pesquisado'],['qualificado','Qualificado'],['contato','Contato iniciado'],['respondeu','Respondeu'],['reuniao','Reunião'],['proposta','Proposta'],['negociacao','Negociação'],['ganho','Ganho'],['perdido','Perdido']];
+const stages = [['novo','Novo'],['pesquisado','Pesquisado'],['qualificado','Qualificado'],['contato','Contato iniciado'],['respondeu','Respondeu'],['reuniao','Reunião'],['proposta','Proposta'],['negociacao','Negociação'],['site','Criação do site'],['ganho','Ganho'],['perdido','Perdido']];
 const importStatus = {queued:'Na fila',running:'Pesquisando',paused:'Pausado',done:'Concluído',pending:'Aguardando',processing:'Pesquisando',error:'Falhou',skipped:'Ignorado'};
 const campaignStatus = {queued:'Na fila',running:'Em andamento',enriching:'Enriquecendo leads',partial:'Parcial',failed:'Falhou',done:'Concluída'};
 const BRAZIL_STATES = [['AC','Acre'],['AL','Alagoas'],['AP','Amapá'],['AM','Amazonas'],['BA','Bahia'],['CE','Ceará'],['DF','Distrito Federal'],['ES','Espírito Santo'],['GO','Goiás'],['MA','Maranhão'],['MT','Mato Grosso'],['MS','Mato Grosso do Sul'],['MG','Minas Gerais'],['PA','Pará'],['PB','Paraíba'],['PR','Paraná'],['PE','Pernambuco'],['PI','Piauí'],['RJ','Rio de Janeiro'],['RN','Rio Grande do Norte'],['RS','Rio Grande do Sul'],['RO','Rondônia'],['RR','Roraima'],['SC','Santa Catarina'],['SP','São Paulo'],['SE','Sergipe'],['TO','Tocantins']];
@@ -328,11 +328,85 @@ function localDetails(data,tab){
 }
 
 async function crmPage(){
-  title('CRM','Acompanhe e atualize cada oportunidade no funil.');
+  title('CRM','Pipeline, scripts de venda, criação de sites e reuniões.');
   const el=document.getElementById('content');
-  el.innerHTML=`<div class="section-title"><div><h1>Funil de vendas</h1><p>Busque por empresa, nicho ou segmento. Os filtros rápidos funcionam nos dois formatos.</p></div><div class="view-switch" role="group" aria-label="Formato do funil"><button class="btn ${state.crmLayout==='board'?'primary':''}" data-crm-layout="board">${iconSvg('kanban',16)} Kanban</button><button class="btn ${state.crmLayout==='list'?'primary':''}" data-crm-layout="list">${iconSvg('list',16)} Lista</button></div></div><form id="crm-filter-form" class="crm-toolbar"><label class="crm-search-box">${iconSvg('search',17)}<input type="search" name="q" value="${esc(state.crmFilters.q)}" placeholder="Buscar empresa, nicho ou segmento" aria-label="Buscar empresa, nicho ou segmento"></label><button class="btn" type="submit">Buscar</button><button class="btn ghost" type="button" data-action="crm-clear-search">Limpar busca</button></form><div class="crm-quick-filters" role="group" aria-label="Filtros rápidos do funil">${[['all','Todos'],['no_site','Sem site'],['tier3','Tier 3 (Quente)'],['tier2','Tier 2 (Morno)'],['score50','Score 50+'],['phone','Com telefone']].map(([id,name])=>`<button class="crm-filter-chip ${state.crmFilters.quick===id?'active':''}" title="${id==='tier3'?'Score do lead igual ou superior a 70':id==='tier2'?'Score do lead de 50 a 69':''}" data-crm-quick="${id}">${esc(name)}</button>`).join('')}</div><div class="crm-results-count" id="crm-results-count"></div><div id="crm-view"></div>`;
+  el.innerHTML=`<div class="section-title"><div><h1>CRM comercial</h1><p>Organize o próximo passo de cada oportunidade.</p></div></div><nav class="crm-workspace-tabs" aria-label="Áreas do CRM">${[['pipeline','Funil'],['objections','Objeções'],['sites','Criação de sites'],['agenda','Agenda']].map(([id,name])=>`<button class="crm-workspace-tab ${state.crmTab===id?'active':''}" data-crm-tab="${id}">${esc(name)}</button>`).join('')}</nav><div id="crm-workspace"></div>`;
+  if(state.crmTab==='pipeline')return crmPipelinePage();
+  if(state.crmTab==='objections')return objectionsPage();
+  if(state.crmTab==='sites')return sitesWorkspacePage();
+  return agendaPage();
+}
+async function crmPipelinePage(){
+  const mount=document.getElementById('crm-workspace');if(!mount)return;
+  mount.innerHTML=`<div class="section-title"><div><h2>Funil de vendas</h2><p>Busque por empresa, nicho ou segmento. Os filtros funcionam nos dois formatos.</p></div><div class="view-switch" role="group" aria-label="Formato do funil"><button class="btn ${state.crmLayout==='board'?'primary':''}" data-crm-layout="board">${iconSvg('kanban',16)} Kanban</button><button class="btn ${state.crmLayout==='list'?'primary':''}" data-crm-layout="list">${iconSvg('list',16)} Lista</button></div></div><form id="crm-filter-form" class="crm-toolbar"><label class="crm-search-box">${iconSvg('search',17)}<input type="search" name="q" value="${esc(state.crmFilters.q)}" placeholder="Buscar empresa, nicho ou segmento" aria-label="Buscar empresa, nicho ou segmento"></label><button class="btn" type="submit">Buscar</button><button class="btn ghost" type="button" data-action="crm-clear-search">Limpar busca</button></form><div class="crm-quick-filters" role="group" aria-label="Filtros rápidos do funil">${[['all','Todos'],['no_site','Sem site'],['tier3','Tier 3 (Quente)'],['tier2','Tier 2 (Morno)'],['score50','Score 50+'],['phone','Com telefone']].map(([id,name])=>`<button class="crm-filter-chip ${state.crmFilters.quick===id?'active':''}" title="${id==='tier3'?'Score do lead igual ou superior a 70':id==='tier2'?'Score do lead de 50 a 69':''}" data-crm-quick="${id}">${esc(name)}</button>`).join('')}</div><div class="crm-results-count" id="crm-results-count"></div><div id="crm-view"></div>`;
   try{const query=new URLSearchParams();if(state.crmFilters.q)query.set('q',state.crmFilters.q);if(state.crmFilters.quick==='no_site')query.set('no_site','1');if(state.crmFilters.quick==='tier3')query.set('tier','3');if(state.crmFilters.quick==='tier2')query.set('tier','2');if(state.crmFilters.quick==='score50')query.set('score_min','50');if(state.crmFilters.quick==='phone')query.set('with_phone','1');const queryString=query.toString();const data=await api('/leads'+(queryString?'?'+queryString:''));state.leads=data.items;const count=document.getElementById('crm-results-count');if(count)count.textContent=`${data.total} lead${data.total===1?'':'s'} encontrados${data.total>300?' · exibindo até 300 por vez':''}`;renderCrmView();}
   catch(e){failure(e)}
+}
+const objectionChoices=[['price','Está caro / não tenho esse dinheiro'],['think','Vou pensar / falar com meu sócio ou família'],['later','Vou deixar para depois / não é o momento'],['compare','Quero ver mais opções / cotar em outro lugar'],['doubt','Não sei se vai funcionar para mim'],['current','Vou continuar com meu site atual']];
+async function objectionsPage(){
+  const mount=document.getElementById('crm-workspace');if(!mount)return;
+  mount.innerHTML='<section class="panel"><h2>Roteiros para lidar com objeções</h2><p class="help">Escolha a etapa do lead e a objeção. O roteiro fica salvo no CRM e você pode adaptar cada resposta ao seu jeito de vender.</p><div id="objection-editor" class="loading-screen">Carregando seus roteiros…</div></section>';
+  try{state.crmScripts=await api('/sales-scripts');renderObjectionEditor()}catch(e){failure(e)}
+}
+function renderObjectionEditor(){
+  const box=document.getElementById('objection-editor');if(!box)return;
+  const selected=state.crmScripts.find(x=>x.stage===state.crmScriptStage&&x.objection_key===state.crmScriptKey);
+  box.innerHTML=`<div class="form-grid"><label class="field">Etapa do funil<select id="crm-script-stage">${options(stages,state.crmScriptStage)}</select></label><label class="field">Objeção de fechamento<select id="crm-script-key">${objectionChoices.map(([id,name])=>`<option value="${id}" ${id===state.crmScriptKey?'selected':''}>${esc(name)}</option>`).join('')}</select></label></div><form id="objection-script-form" class="objection-editor-form"><input type="hidden" name="stage" value="${esc(state.crmScriptStage)}"><input type="hidden" name="objection_key" value="${esc(state.crmScriptKey)}"><label class="field">Script editável<textarea name="body" rows="12" maxlength="5000" required>${esc(selected?.body||'')}</textarea></label><div class="button-row"><button class="btn primary" type="submit">Salvar roteiro desta etapa</button><small class="help">${selected?.updated_at?'Última edição salva: '+esc(date(selected.updated_at)):'Roteiro sugerido; ainda não personalizado.'}</small></div></form><aside class="notice good" style="margin-top:18px">Estrutura sugerida: escute e reconheça a preocupação, esclareça com informações reais e combine um próximo passo sem pressão.</aside>`;
+}
+function localDateString(value){const d=new Date(value);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+function localDateTime(value){const d=new Date(value);return `${localDateString(d)}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`}
+function storefrontPrompt(lead,platform){
+  const name=lead?.name||'[selecione uma empresa]';
+  const isLovable=platform==='lovable';
+  const platformName=platform==='yampi'?'Yampi':platform==='nuvemshop'?'Nuvemshop':'Lovable';
+  return `${isLovable?'Crie um site institucional ou landing page':'Prepare a estrutura de uma loja virtual para configurar na '+platformName} para ${name}.
+
+INFORMAÇÕES DO NEGÓCIO (confira antes de publicar)
+Segmento: ${lead?.category||'[confirmar com o responsável]'}
+Cidade/UF: ${[lead?.city,lead?.state].filter(Boolean).join(', ')||'[confirmar]'}
+Endereço: ${lead?.address||'[confirmar; não publicar sem autorização]'}
+Telefone comercial: ${lead?.phone||'[confirmar]'}
+Instagram: ${lead?.instagram||'[confirmar]'}
+Site atual: ${lead?.website||'não informado pelo CRM; confirmar com a empresa'}
+
+OBJETIVO
+${isLovable?'Apresentar os serviços e facilitar contato e pedidos de orçamento pelo celular.':'Criar uma loja mobile-first com catálogo, busca, categorias, carrinho e checkout nativos da plataforma '+platformName+'.'}
+${isLovable?'Seções: início, sobre, serviços/produtos, galeria autorizada, localização, perguntas frequentes e contato.':'Organize categorias, página de produto, variações, estoque, políticas de entrega/devolução e meios de pagamento; deixe configurações comerciais pendentes sinalizadas.'}
+Visual profissional alinhado ao segmento. Use apenas identidade, fotos e textos fornecidos ou autorizados pelo estabelecimento. Não invente preços, produtos, avaliações, endereço, políticas, descontos ou resultados. Marque como [CONFIRMAR] tudo o que faltar. Entregue conteúdo editável e uma lista final do que o dono precisa aprovar. ${isLovable?'':'A configuração e a publicação serão feitas pelo operador na '+platformName+'; não simule credenciais nem publique sem aprovação.'}`;
+}
+const platformLinks={lovable:'https://lovable.dev/',nuvemshop:'https://www.nuvemshop.com.br/',yampi:'https://www.yampi.com.br/'};
+async function sitesWorkspacePage(){
+  const mount=document.getElementById('crm-workspace');if(!mount)return;
+  try{state.leads=(await api('/leads')).items;renderSitesWorkspace()}catch(e){failure(e)}
+}
+function renderSitesWorkspace(){
+  const mount=document.getElementById('crm-workspace');if(!mount)return;
+  const lead=state.leads.find(x=>Number(x.id)===Number(state.siteLeadId))||state.leads[0];if(lead)state.siteLeadId=lead.id;
+  const platform=state.sitePlatform||'lovable';
+  mount.innerHTML=`<section class="panel"><div class="panel-head"><div><h2>Preparar site para um lead</h2><p class="help">Selecione uma empresa para preencher o briefing com os dados já cadastrados.</p></div></div>${state.leads.length?`<div class="site-workspace-grid"><label class="field">Lead<select id="site-lead-select">${state.leads.map(l=>`<option value="${l.id}" ${Number(l.id)===Number(lead?.id)?'selected':''}>${esc(l.name)} · ${esc([l.city,l.state].filter(Boolean).join('/'))}</option>`).join('')}</select></label><label class="field">Tipo de entrega<select id="site-platform-select"><option value="lovable" ${platform==='lovable'?'selected':''}>Site institucional · Lovable</option><option value="nuvemshop" ${platform==='nuvemshop'?'selected':''}>Loja virtual · Nuvemshop</option><option value="yampi" ${platform==='yampi'?'selected':''}>Loja virtual · Yampi</option></select></label></div>${lead?`<div class="site-lead-summary"><div><strong>${esc(lead.name)}</strong><small>${esc([lead.category,lead.address,lead.city,lead.state].filter(Boolean).join(' · ')||'Dados complementares a confirmar')}</small></div><button class="btn" data-lead="${lead.id}">Abrir ficha</button></div><label class="field" style="margin-top:18px">Briefing / prompt editável<textarea id="site-work-prompt" rows="16">${esc(storefrontPrompt(lead,platform))}</textarea></label><div class="button-row" style="margin-top:12px"><button class="btn primary" data-action="copy-site-work">Copiar briefing</button><a class="btn" href="${platformLinks[platform]}" target="_blank" rel="noopener noreferrer">Abrir ${platform==='lovable'?'Lovable':platform==='nuvemshop'?'Nuvemshop':'Yampi'} ↗</a>${lead.website?link(lead.website,'Ver site atual'):''}</div><p class="help" style="margin-top:12px">O CRM organiza os dados e o prompt. A construção, configuração de catálogo, publicação e contratação de plano são feitas na plataforma externa e dependem de revisão e aprovação do cliente.</p>`:'<div class="empty">Cadastre ou importe leads para preparar um site.</div>'}`:'<div class="empty">Nenhum lead encontrado. Importe ou cadastre uma empresa primeiro.</div>'}</section>`;
+}
+function firstWeekdayMonday(dateObj){return (dateObj.getDay()+6)%7}
+function calendarRange(month){const first=new Date(month.getFullYear(),month.getMonth(),1);const start=new Date(first);start.setDate(first.getDate()-firstWeekdayMonday(first));const end=new Date(start);end.setDate(start.getDate()+41);return {start,end}}
+function appointmentDayKey(value){return localDateString(value)}
+async function agendaPage(){
+  const mount=document.getElementById('crm-workspace');if(!mount)return;
+  mount.innerHTML='<section class="panel"><h2>Agenda de reuniões</h2><p class="help">Carregando calendário…</p></section>';
+  try{state.leads=(await api('/leads')).items;await loadAgenda()}catch(e){failure(e)}
+}
+async function loadAgenda(){
+  const mount=document.getElementById('crm-workspace');if(!mount)return;
+  const {start,end}=calendarRange(state.agendaMonth),query=new URLSearchParams({start:localDateString(start),end:localDateString(end)});
+  try{state.appointments=await api('/appointments?'+query.toString());renderAgenda();}catch(e){failure(e)}
+}
+function renderAgenda(){
+  const mount=document.getElementById('crm-workspace');if(!mount)return;
+  const {start}=calendarRange(state.agendaMonth),monthName=state.agendaMonth.toLocaleDateString('pt-BR',{month:'long',year:'numeric'}),selected=state.agendaDay||localDateString(new Date());
+  const byDay={};for(const a of state.appointments){const k=appointmentDayKey(a.starts_at);(byDay[k] ||= []).push(a)}
+  const cells=Array.from({length:42},(_,i)=>{const day=new Date(start);day.setDate(start.getDate()+i);const key=localDateString(day),inside=day.getMonth()===state.agendaMonth.getMonth();return `<button class="calendar-day ${inside?'':'outside'} ${key===selected?'selected':''}" data-agenda-day="${key}" aria-label="${esc(day.toLocaleDateString('pt-BR'))}, ${(byDay[key]||[]).length} reuniões"><span>${day.getDate()}</span>${(byDay[key]||[]).slice(0,2).map(a=>`<small>${esc(new Date(a.starts_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))} · ${esc(a.lead_name||a.title)}</small>`).join('')}${(byDay[key]||[]).length>2?`<small>+${byDay[key].length-2} reuniões</small>`:''}</button>`}).join('');
+  const selectedDate=new Date(`${selected}T12:00:00`),items=byDay[selected]||[];
+  const editing=state.editAppointmentId?state.appointments.find(x=>Number(x.id)===Number(state.editAppointmentId)):null;
+  const dateInput=editing?localDateTime(editing.starts_at):`${selected}T10:00`;
+  mount.innerHTML=`<section class="panel agenda-panel"><div class="agenda-heading"><div><span class="dash-eyebrow">REUNIÕES E RETORNOS</span><h2>Agenda comercial</h2><p class="help">Calendário salvo neste CRM, sincronizado pelo banco de dados.</p></div><div class="agenda-month-tools"><button class="btn" data-agenda-month="-1" aria-label="Mês anterior">‹</button><strong>${esc(monthName)}</strong><button class="btn" data-agenda-month="1" aria-label="Próximo mês">›</button></div></div><div class="calendar-grid calendar-weekdays">${['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'].map(x=>`<span>${x}</span>`).join('')}</div><div class="calendar-grid">${cells}</div></section><div class="agenda-columns"><section class="panel"><div class="panel-head"><div><h2>${esc(selectedDate.toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long'}))}</h2><small>${items.length} reunião${items.length===1?'':'ões'}</small></div><button class="btn" data-action="new-appointment">+ Agendar</button></div>${items.length?items.map(a=>`<article class="appointment-card"><div class="appointment-time">${esc(new Date(a.starts_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}<small>${a.duration_minutes} min</small></div><div class="appointment-info"><strong>${esc(a.title)}</strong><small>${esc(a.lead_name||'Lead')}</small>${a.notes?`<p>${esc(a.notes)}</p>`:''}<span class="badge ${a.status==='cancelled'?'warning':a.status==='completed'?'dim':''}">${a.status==='cancelled'?'Cancelada':a.status==='completed'?'Concluída':'Agendada'}</span></div><div class="appointment-actions"><button class="btn" data-edit-appointment="${a.id}">Editar</button>${a.meet_url?`<a class="btn primary" href="${esc(a.meet_url)}" target="_blank" rel="noopener noreferrer">Entrar no Meet ↗</a>`:`<a class="btn" href="https://meet.google.com/new" target="_blank" rel="noopener noreferrer">Abrir Google Meet ↗</a>`}<button class="btn danger" data-delete-appointment="${a.id}" aria-label="Excluir reunião">Excluir</button></div></article>`).join(''):'<div class="empty">Sem reuniões neste dia. Use “Agendar” para marcar uma conversa.</div>'}</section><section class="panel agenda-form-panel"><div class="panel-head"><div><h2>${editing?'Editar reunião':'Nova reunião'}</h2><p class="help">${editing?'Atualize horário, lead, anotações e link.':'Salve data e horário; você pode inserir o link do Meet depois.'}</p></div>${editing?`<button class="btn ghost" data-action="cancel-edit-appointment">Cancelar edição</button>`:''}</div><form id="appointment-form" class="form-grid"><input type="hidden" name="id" value="${editing?.id||''}"><label class="field span2">Lead<select name="lead_id" required><option value="">Escolha a empresa</option>${state.leads.map(l=>`<option value="${l.id}" ${Number(l.id)===Number(editing?.lead_id||state.siteLeadId)?'selected':''}>${esc(l.name)} · ${esc([l.city,l.state].filter(Boolean).join('/'))}</option>`).join('')}</select></label><label class="field span2">Assunto<input name="title" maxlength="160" required value="${esc(editing?.title||'Reunião de apresentação')}"></label><label class="field">Data e horário<input type="datetime-local" name="starts_at_local" required value="${esc(dateInput)}"></label><label class="field">Duração<select name="duration_minutes">${[[15,'15 minutos'],[30,'30 minutos'],[45,'45 minutos'],[60,'1 hora'],[90,'1h30'],[120,'2 horas']].map(([v,t])=>`<option value="${v}" ${Number(editing?.duration_minutes||30)===v?'selected':''}>${t}</option>`).join('')}</select></label><label class="field span2">Link do Google Meet (opcional)<input type="url" name="meet_url" placeholder="https://meet.google.com/abc-defg-hij" value="${esc(editing?.meet_url||'')}"></label><label class="field span2">Anotações<textarea name="notes" rows="3" maxlength="2000" placeholder="Pauta, necessidades e próximos passos">${esc(editing?.notes||'')}</textarea></label><div class="button-row span2"><button class="btn primary" type="submit">${editing?'Salvar alterações':'Salvar reunião'}</button><a class="btn" href="https://meet.google.com/new" target="_blank" rel="noopener noreferrer">Criar sala no Google Meet ↗</a></div></form><p class="help">O botão abre o Google Meet para criar uma sala. Cole o link gerado no campo antes de salvar. O calendário do CRM não sincroniza automaticamente com o Google Calendar.</p></section></div>`;
 }
 function renderCrmView(){
   const mount=document.getElementById('crm-view');if(!mount)return;
@@ -496,6 +570,19 @@ async function handleFormSubmit(form){
   }
   if(form.id==='crm-filter-form'){state.crmFilters.q=obj.q.trim();await crmPage();return}
   try{
+    if(form.id==='objection-script-form'){
+      const saved=await post('/sales-scripts',obj);
+      const index=state.crmScripts.findIndex(x=>x.stage===saved.stage&&x.objection_key===saved.objection_key);
+      if(index>=0)state.crmScripts[index]=saved;else state.crmScripts.push(saved);
+      toast('Roteiro salvo para esta etapa e objeção.');renderObjectionEditor();return;
+    }
+    if(form.id==='appointment-form'){
+      const startsAt=new Date(obj.starts_at_local);
+      if(Number.isNaN(startsAt.getTime()))throw new Error('Informe uma data e horário válidos.');
+      const payload={lead_id:Number(obj.lead_id),title:obj.title,starts_at:startsAt.toISOString(),duration_minutes:Number(obj.duration_minutes),meet_url:obj.meet_url,notes:obj.notes};
+      if(obj.id)await api('/appointments/'+obj.id,{method:'PATCH',body:payload});else await post('/appointments',payload);
+      state.editAppointmentId=0;toast(obj.id?'Reunião atualizada.':'Reunião salva na agenda.');await loadAgenda();return;
+    }
     if(form.id==='local-radar-form'){
       state.radarFilters={city:obj.city.trim(),niche:obj.niche.trim(),state:obj.state.trim().toUpperCase(),min_rating:obj.min_rating,max_reviews:obj.max_reviews};
       await renderLocalModule();return;
@@ -521,7 +608,7 @@ async function handleFormSubmit(form){
 
 document.addEventListener('submit',event=>{event.preventDefault();submitForm(event.target)});
 document.addEventListener('click',async event=>{
-  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-campaign-leads],[data-crm-layout],[data-crm-quick],[data-pick-niche],[data-edit-niche],[data-delete-niche],[data-remove-token],[data-remove-collaborator],[data-import-batch],[data-import-resume],[data-campaign-resume],[data-find-instagram],[data-instagram-confirm],[data-local-tab],[data-local-sidebar],[data-local-radar-search],[data-local-copy],[data-local-download],[data-local-run],[data-local-save],[data-local-peers]');if(!hit)return;
+  const hit=event.target.closest('[data-view],[data-lead],[data-compose],[data-call],[data-enrich],[data-block],[data-action],[data-niche],[data-list],[data-campaign-leads],[data-crm-layout],[data-crm-quick],[data-crm-tab],[data-agenda-month],[data-agenda-day],[data-edit-appointment],[data-delete-appointment],[data-pick-niche],[data-edit-niche],[data-delete-niche],[data-remove-token],[data-remove-collaborator],[data-import-batch],[data-import-resume],[data-campaign-resume],[data-find-instagram],[data-instagram-confirm],[data-local-tab],[data-local-sidebar],[data-local-radar-search],[data-local-copy],[data-local-download],[data-local-run],[data-local-save],[data-local-peers]');if(!hit)return;
   if(hit.dataset.localRadarSearch){const f=document.getElementById('local-radar-form');const filters=f?Object.fromEntries(new FormData(f).entries()):state.radarFilters;navigate('buscar');setTimeout(()=>{const campaign=document.getElementById('campaign-form');if(campaign){campaign.elements.niche.value=filters.niche||'';campaign.elements.city.value=filters.city||'';campaign.elements.state.value=filters.state||''}},0);return}
   if(hit.dataset.localSidebar){state.localTab=hit.dataset.localSidebar;navigate('local/'+state.localTab);document.getElementById('sidebar')?.classList.remove('open');document.getElementById('scrim')?.classList.remove('show');return}
   if(hit.dataset.localPeers){const l=state.localData?.lead;if(!l)return;navigate('buscar');setTimeout(()=>{const f=document.getElementById('campaign-form');if(f){f.elements.niche.value=l.category||'';f.elements.city.value=l.city||'';f.elements.state.value=l.state||''}},0);return}
@@ -532,6 +619,11 @@ document.addEventListener('click',async event=>{
   if(hit.dataset.localDownload){const content=document.getElementById('local-document')?.value;if(!content)return;const blob=new Blob([content],{type:'text/plain;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=hit.dataset.localDownload+'-'+state.localLeadId+'.txt';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000);return}
   if(hit.dataset.view){navigate(hit.dataset.view);document.getElementById('sidebar')?.classList.remove('open');document.getElementById('scrim')?.classList.remove('show');return}
   if(hit.dataset.campaignLeads){state.filters={campaign_id:hit.dataset.campaignLeads};navigate('leads');return}
+  if(hit.dataset.crmTab){state.crmTab=hit.dataset.crmTab;state.editAppointmentId=0;await crmPage();return}
+  if(hit.dataset.agendaMonth){const d=new Date(state.agendaMonth);d.setMonth(d.getMonth()+Number(hit.dataset.agendaMonth));state.agendaMonth=new Date(d.getFullYear(),d.getMonth(),1);state.agendaDay=localDateString(state.agendaMonth);state.editAppointmentId=0;await loadAgenda();return}
+  if(hit.dataset.agendaDay){state.agendaDay=hit.dataset.agendaDay;state.editAppointmentId=0;renderAgenda();return}
+  if(hit.dataset.editAppointment){state.editAppointmentId=Number(hit.dataset.editAppointment);renderAgenda();return}
+  if(hit.dataset.deleteAppointment){if(!confirm('Excluir esta reunião da agenda?'))return;try{await api('/appointments/'+hit.dataset.deleteAppointment,{method:'DELETE'});state.editAppointmentId=0;toast('Reunião excluída da agenda.');await loadAgenda()}catch(e){toast(e.message,true)}return}
   if(hit.dataset.crmLayout){state.crmLayout=hit.dataset.crmLayout;try{localStorage.setItem('crm-layout',state.crmLayout)}catch{}document.querySelectorAll('[data-crm-layout]').forEach(button=>button.classList.toggle('primary',button.dataset.crmLayout===state.crmLayout));renderCrmView();return}
   if(hit.dataset.pickNiche){const field=document.querySelector('#campaign-form [name="niche"]');if(field)field.value=hit.dataset.pickNiche;document.getElementById('drawer-mount').innerHTML='';field?.focus();return}
   if(hit.dataset.crmQuick){state.crmFilters.quick=hit.dataset.crmQuick;if(hit.dataset.crmQuick==='all')state.crmFilters.q='';await crmPage();return}
@@ -582,6 +674,9 @@ document.addEventListener('click',async event=>{
     case 'clear-filter':state.filters={};leadsPage();break;
     case 'toggle-campaign-filter':loadCampaignLeadFilters();break;
     case 'crm-clear-search':state.crmFilters.q='';crmPage();break;
+    case 'new-appointment':state.editAppointmentId=0;renderAgenda();document.querySelector('#appointment-form [name="title"]')?.focus();break;
+    case 'cancel-edit-appointment':state.editAppointmentId=0;renderAgenda();break;
+    case 'copy-site-work':try{await navigator.clipboard.writeText(document.getElementById('site-work-prompt').value);toast('Briefing copiado. Revise os dados na plataforma escolhida.')}catch{toast('Não foi possível copiar automaticamente.',true)}break;
     case 'close-campaign-filter':{const panel=document.getElementById('campaign-filter-panel');if(panel)panel.hidden=true;break}
     case 'refresh-campaigns':loadCampaigns();break;
     case 'refresh-imports':loadImportBatches();break;
@@ -613,6 +708,10 @@ document.addEventListener('click',async event=>{
 document.addEventListener('change',async event=>{
   if(event.target.matches('[data-stage-lead]')){const select=event.target,leadId=Number(select.dataset.stageLead),lead=state.leads.find(item=>Number(item.id)===leadId),oldStage=lead?.stage;select.disabled=true;try{await api('/leads/'+leadId,{method:'PATCH',body:{stage:select.value}});if(lead)lead.stage=select.value;toast('Etapa atualizada.');renderCrmView()}catch(e){select.value=oldStage||'novo';toast(e.message,true)}finally{select.disabled=false}return}
   if(event.target.id==='niche-group-filter'){state.nicheVisibleCount=60;renderNicheOptions();return}
+  if(event.target.id==='crm-script-stage'){state.crmScriptStage=event.target.value;renderObjectionEditor();return}
+  if(event.target.id==='crm-script-key'){state.crmScriptKey=event.target.value;renderObjectionEditor();return}
+  if(event.target.id==='site-lead-select'){state.siteLeadId=Number(event.target.value);renderSitesWorkspace();return}
+  if(event.target.id==='site-platform-select'){state.sitePlatform=event.target.value;renderSitesWorkspace();return}
   if(event.target.id==='local-lead-select'){state.localLeadId=Number(event.target.value);renderLocalModule();return}
   if(event.target.id==='lovable-kind'){const field=document.getElementById('lovable-prompt-text');if(field&&state.lead)field.value=buildLovablePrompt(state.lead,event.target.value);return}
   if(event.target.id!=='csv-file')return;

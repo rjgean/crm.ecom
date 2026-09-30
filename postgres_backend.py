@@ -57,7 +57,7 @@ class Connection:
         ignored = bool(re.match(r"^\s*INSERT OR IGNORE INTO\b", sql, re.I))
         if ignored:
             statement += " ON CONFLICT DO NOTHING"
-        returning = bool(re.match(r"^\s*INSERT INTO\s+(users|leads|lead_lists|import_batches|campaigns|saved_niches)\b", statement, re.I))
+        returning = bool(re.match(r"^\s*INSERT INTO\s+(users|leads|lead_lists|import_batches|campaigns|saved_niches|appointments)\b", statement, re.I))
         if returning and " RETURNING " not in statement.upper():
             statement += " RETURNING id"
         # SQL placeholders in this application occur only in parameterized SQL,

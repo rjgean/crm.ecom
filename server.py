@@ -30,8 +30,16 @@ DB_PATH = Path(os.environ.get("DATABASE_PATH", str(ROOT / "data" / "crm.sqlite3"
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8080"))
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1" if os.environ.get("VERCEL") else "0") == "1"
-STAGES = ["novo", "pesquisado", "qualificado", "contato", "respondeu", "reuniao", "proposta", "negociacao", "ganho", "perdido"]
+STAGES = ["novo", "pesquisado", "qualificado", "contato", "respondeu", "reuniao", "proposta", "negociacao", "site", "ganho", "perdido"]
 STATUSES = ["incerto", "sem_site_identificado", "apenas_redes", "site_sem_loja", "marketplace", "loja_virtual"]
+OBJECTION_TYPES = {
+    "price": "Está caro / não tenho esse dinheiro",
+    "think": "Vou pensar / falar com meu sócio ou família",
+    "later": "Vou deixar para depois / não é o momento",
+    "compare": "Quero ver mais opções / cotar em outro lugar",
+    "doubt": "Não sei se vai funcionar para mim",
+    "current": "Vou continuar com meu site atual",
+}
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/styles.css": ("styles.css", "text/css; charset=utf-8"), "/favicon.svg": ("favicon.svg", "image/svg+xml"), "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json; charset=utf-8"), "/sw.js": ("sw.js", "text/javascript; charset=utf-8"), "/icon-192.png": ("icon-192.png", "image/png"), "/icon-512.png": ("icon-512.png", "image/png"), "/icon-maskable-512.png": ("icon-maskable-512.png", "image/png")}
 WORKER_WAKE = threading.Event()
 LOGIN_FAILURES = {}
@@ -40,6 +48,27 @@ LOGIN_LOCK = threading.Lock()
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def default_objection_script(stage, objection):
+    """Short consultative reply; avoids pressure and unverifiable promises."""
+    replies = {
+        "price": "Entendo. Para eu não sugerir algo fora da realidade, posso entender qual faixa de investimento seria confortável? Também podemos começar por uma versão menor, com escopo claro, e você decide sem compromisso.",
+        "think": "Claro, é uma decisão que pode ser conversada com calma. O que você ou seu sócio precisam avaliar para decidir? Posso deixar escopo, prazo e investimento por escrito para facilitar.",
+        "later": "Sem problema. O que precisaria mudar para esse projeto fazer sentido? Se preferir, combinamos uma data para eu retomar o assunto, sem compromisso.",
+        "compare": "Faz sentido comparar. Posso te enviar o escopo e os itens incluídos para você avaliar propostas equivalentes. Além do preço, o que pesa mais na sua escolha?",
+        "doubt": "É razoável querer entender antes de investir. Podemos definir um objetivo simples e critérios para avaliar o resultado, sem prometer vendas. O que seria um primeiro avanço útil para o seu negócio?",
+        "current": "Ótimo que você já tenha uma solução. Posso perguntar o que está funcionando bem e o que ainda dá trabalho? Se não houver uma necessidade concreta, não faz sentido trocar agora.",
+    }
+    stage_names = dict((code, name) for code, name in [
+        ("novo", "Novo"), ("pesquisado", "Pesquisado"), ("qualificado", "Qualificado"),
+        ("contato", "Contato iniciado"), ("respondeu", "Respondeu"), ("reuniao", "Reunião"),
+        ("proposta", "Proposta"), ("negociacao", "Negociação"), ("site", "Criação do site"),
+        ("ganho", "Ganho"), ("perdido", "Perdido")])
+    return (f"ETAPA: {stage_names.get(stage, stage)}\n\n"
+            f"EMPATIA\nAgradeça a sinceridade e reconheça a preocupação sem discutir com a pessoa.\n\n"
+            f"RESPOSTA SUGERIDA\n{replies[objection]}\n\n"
+            "PRÓXIMO PASSO\nFaça uma pergunta aberta, escute a resposta e registre a combinação. Se a pessoa não quiser continuar, agradeça e encerre com respeito.")
 
 
 def vercel_sso_only(host=""):
@@ -189,6 +218,10 @@ def init_db():
         CREATE INDEX IF NOT EXISTS observations_lead_recent ON observations(lead_id,id DESC);
         CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY, lead_id INTEGER REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS activities_lead_recent ON activities(lead_id,id DESC);
+        CREATE TABLE IF NOT EXISTS sales_scripts(stage TEXT NOT NULL, objection_key TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(stage,objection_key));
+        CREATE TABLE IF NOT EXISTS appointments(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, title TEXT NOT NULL, starts_at TEXT NOT NULL, duration_minutes INTEGER NOT NULL DEFAULT 30, meet_url TEXT, notes TEXT, status TEXT NOT NULL DEFAULT 'scheduled', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS appointments_starts_at_idx ON appointments(starts_at);
+        CREATE INDEX IF NOT EXISTS appointments_lead_id_idx ON appointments(lead_id,starts_at);
         CREATE TABLE IF NOT EXISTS lead_lists(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS list_items(list_id INTEGER NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, PRIMARY KEY(list_id, lead_id));
         CREATE INDEX IF NOT EXISTS list_items_lead_id_idx ON list_items(lead_id);
@@ -804,6 +837,16 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/api/dashboard": return self.dashboard()
             if method == "GET" and path == "/api/usage": return self.usage()
             if method == "GET" and path == "/api/leads": return self.leads()
+            if path == "/api/sales-scripts":
+                if method == "GET": return self.sales_scripts()
+                if method == "POST": return self.save_sales_script()
+            if path == "/api/appointments":
+                if method == "GET": return self.appointments()
+                if method == "POST": return self.create_appointment()
+            match = re.fullmatch(r"/api/appointments/(\d+)", path)
+            if match:
+                if method == "PATCH": return self.update_appointment(int(match[1]))
+                if method == "DELETE": return self.delete_appointment(int(match[1]))
             if method == "GET" and path == "/api/local/summary": return self.local_summary()
             if method == "GET" and path == "/api/local/radar": return self.local_radar()
             if method == "POST" and path == "/api/leads": return self.create_lead()
@@ -1111,6 +1154,121 @@ class Handler(BaseHTTPRequestHandler):
             con.execute("UPDATE users SET email=? WHERE id=?", (email, user["id"]))
             con.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
         return self.send({"ok": True}, headers={"Set-Cookie": "crm_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
+
+    def sales_scripts(self):
+        with db() as con:
+            saved = {(row["stage"], row["objection_key"]): dict(row) for row in con.execute("SELECT * FROM sales_scripts")}
+        rows = []
+        for stage in STAGES:
+            for key, title in OBJECTION_TYPES.items():
+                row = saved.get((stage, key))
+                rows.append(row or {"stage": stage, "objection_key": key, "title": title,
+                                    "body": default_objection_script(stage, key), "updated_at": None})
+        return self.send(rows)
+
+    def save_sales_script(self):
+        body = self.json_body()
+        stage = str(body.get("stage", ""))
+        key = str(body.get("objection_key", ""))
+        script = str(body.get("body", "")).strip()
+        if stage not in STAGES: raise ApiError("Selecione uma etapa válida")
+        if key not in OBJECTION_TYPES: raise ApiError("Selecione uma objeção válida")
+        if not script or len(script) > 5000: raise ApiError("O roteiro deve ter até 5.000 caracteres")
+        title = OBJECTION_TYPES[key]
+        with db() as con:
+            con.execute("INSERT INTO sales_scripts(stage,objection_key,title,body,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(stage,objection_key) DO UPDATE SET title=excluded.title,body=excluded.body,updated_at=excluded.updated_at",
+                        (stage, key, title, script, now()))
+        return self.send({"stage": stage, "objection_key": key, "title": title, "body": script, "updated_at": now()})
+
+    def appointments(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        start = (query.get("start") or [""])[0]
+        end = (query.get("end") or [""])[0]
+        lead_id = (query.get("lead_id") or [""])[0]
+        if start and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start): raise ApiError("Data inicial inválida")
+        if end and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end): raise ApiError("Data final inválida")
+        clauses, params = [], []
+        if start: clauses.append("substr(a.starts_at,1,10)>=?"); params.append(start)
+        if end: clauses.append("substr(a.starts_at,1,10)<=?"); params.append(end)
+        if lead_id:
+            try: params.append(int(lead_id))
+            except ValueError: raise ApiError("Lead inválido")
+            clauses.append("a.lead_id=?")
+        sql = "SELECT a.*,l.name AS lead_name FROM appointments a JOIN leads l ON l.id=a.lead_id"
+        if clauses: sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY a.starts_at ASC LIMIT 500"
+        with db() as con: rows = [dict(row) for row in con.execute(sql, params)]
+        return self.send(rows)
+
+    def appointment_values(self, body, partial=False, previous=None):
+        source = {**(previous or {}), **body}
+        values = {}
+        if not partial or "lead_id" in body:
+            try: values["lead_id"] = int(source.get("lead_id"))
+            except (ValueError, TypeError): raise ApiError("Escolha uma empresa para a reunião")
+        if not partial or "title" in body:
+            title = str(source.get("title") or "").strip()
+            if not title or len(title) > 160: raise ApiError("Informe um título de até 160 caracteres")
+            values["title"] = title
+        if not partial or "starts_at" in body:
+            starts = str(source.get("starts_at") or "").strip()
+            try:
+                parsed = datetime.fromisoformat(starts.replace("Z", "+00:00"))
+                if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=timezone.utc)
+                starts = parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+            except ValueError: raise ApiError("Informe uma data e horário válidos")
+            values["starts_at"] = starts
+        if not partial or "duration_minutes" in body:
+            try: duration = int(source.get("duration_minutes", 30))
+            except (ValueError, TypeError): raise ApiError("Duração inválida")
+            if not 15 <= duration <= 240: raise ApiError("A duração deve ser de 15 minutos a 4 horas")
+            values["duration_minutes"] = duration
+        if not partial or "meet_url" in body:
+            meet = str(source.get("meet_url") or "").strip()
+            if meet:
+                parsed = urllib.parse.urlsplit(meet)
+                if parsed.scheme != "https" or parsed.hostname != "meet.google.com" or parsed.username or parsed.password:
+                    raise ApiError("Use um link HTTPS do Google Meet")
+            values["meet_url"] = meet or None
+        if not partial or "notes" in body:
+            notes = str(source.get("notes") or "").strip()
+            if len(notes) > 2000: raise ApiError("As observações devem ter até 2.000 caracteres")
+            values["notes"] = notes or None
+        if not partial or "status" in body:
+            status = str(source.get("status") or "scheduled")
+            if status not in ("scheduled", "completed", "cancelled"): raise ApiError("Status de reunião inválido")
+            values["status"] = status
+        return values
+
+    def create_appointment(self):
+        body = self.json_body()
+        values = self.appointment_values(body)
+        stamp = now()
+        with db() as con:
+            if not con.execute("SELECT id FROM leads WHERE id=? AND blocked=0", (values["lead_id"],)).fetchone(): raise ApiError("Lead não encontrado", 404)
+            cur = con.execute("INSERT INTO appointments(lead_id,title,starts_at,duration_minutes,meet_url,notes,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                              tuple(values[k] for k in ("lead_id","title","starts_at","duration_minutes","meet_url","notes","status")) + (stamp,stamp))
+            appointment_id = cur.lastrowid
+            con.execute("INSERT INTO activities(lead_id,kind,detail,created_at) VALUES(?,?,?,?)", (values["lead_id"], "reuniao", "Reunião agendada: " + values["title"], stamp))
+        return self.send({"id": appointment_id, **values, "created_at": stamp, "updated_at": stamp}, 201)
+
+    def update_appointment(self, appointment_id):
+        body = self.json_body()
+        with db() as con:
+            old = rowdict(con.execute("SELECT * FROM appointments WHERE id=?", (appointment_id,)).fetchone())
+            if not old: raise ApiError("Reunião não encontrada", 404)
+            values = self.appointment_values(body, partial=True, previous=old)
+            if "lead_id" in values and not con.execute("SELECT id FROM leads WHERE id=? AND blocked=0", (values["lead_id"],)).fetchone(): raise ApiError("Lead não encontrado", 404)
+            values["updated_at"] = now()
+            con.execute("UPDATE appointments SET " + ",".join(f"{key}=?" for key in values) + " WHERE id=?", [*values.values(), appointment_id])
+            result = rowdict(con.execute("SELECT a.*,l.name AS lead_name FROM appointments a JOIN leads l ON l.id=a.lead_id WHERE a.id=?", (appointment_id,)).fetchone())
+        return self.send(result)
+
+    def delete_appointment(self, appointment_id):
+        with db() as con:
+            count = con.execute("DELETE FROM appointments WHERE id=?", (appointment_id,)).rowcount
+        if not count: raise ApiError("Reunião não encontrada", 404)
+        return self.send({"ok": True})
 
     def dashboard(self):
         with db() as con:

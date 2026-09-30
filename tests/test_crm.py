@@ -90,6 +90,39 @@ class CRMTests(unittest.TestCase):
         self.assertEqual(self.request("DELETE", f"/niches/{niche_id}")[0], 200)
         self.assertEqual(self.request("DELETE", f"/niches/{niche_id}")[0], 404)
 
+    def test_objection_scripts_are_saved_per_stage_and_type(self):
+        self.login()
+        status, defaults = self.request("GET", "/sales-scripts")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(len(defaults), len(server.STAGES) * len(server.OBJECTION_TYPES))
+        edited = "Agradeço por explicar. Vamos olhar juntos o escopo e decidir sem pressão."
+        status, saved = self.request("POST", "/sales-scripts", {"stage":"proposta", "objection_key":"price", "body":edited})
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["body"], edited)
+        _, rows = self.request("GET", "/sales-scripts")
+        self.assertEqual(next(x for x in rows if x["stage"]=="proposta" and x["objection_key"]=="price")["body"], edited)
+        self.assertNotEqual(next(x for x in rows if x["stage"]=="contato" and x["objection_key"]=="price")["body"], edited)
+        self.assertEqual(self.request("POST", "/sales-scripts", {"stage":"bogus", "objection_key":"price", "body":edited})[0], 400)
+
+    def test_appointments_can_be_created_edited_listed_and_deleted(self):
+        self.login()
+        _, lead = self.request("POST", "/leads", {"name":"Agenda Teste", "city":"Niterói", "state":"RJ"})
+        meeting = {"lead_id":lead["id"], "title":"Apresentação da proposta", "starts_at":"2026-10-14T14:30:00-03:00", "duration_minutes":45, "meet_url":"https://meet.google.com/abc-defg-hij", "notes":"Revisar catálogo e prazos"}
+        status, created = self.request("POST", "/appointments", meeting)
+        self.assertEqual(status, 201)
+        self.assertEqual(created["lead_id"], lead["id"])
+        self.assertEqual(created["meet_url"], meeting["meet_url"])
+        status, rows = self.request("GET", "/appointments?start=2026-10-14&end=2026-10-14")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(row["id"]==created["id"] and row["lead_name"]=="Agenda Teste" for row in rows))
+        status, updated = self.request("PATCH", f"/appointments/{created['id']}", {"title":"Reunião confirmada", "status":"completed"})
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["title"], "Reunião confirmada")
+        self.assertEqual(updated["status"], "completed")
+        self.assertEqual(self.request("PATCH", f"/appointments/{created['id']}", {"meet_url":"javascript:alert(1)"})[0], 400)
+        self.assertEqual(self.request("DELETE", f"/appointments/{created['id']}")[0], 200)
+        self.assertEqual(self.request("DELETE", f"/appointments/{created['id']}")[0], 404)
+
     def test_crm_quick_filters_search_tiers_site_and_phone(self):
         self.login()
         leads=[]
