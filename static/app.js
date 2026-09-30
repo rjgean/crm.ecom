@@ -58,6 +58,12 @@ const safeLink = value => { try { const u = new URL(value); return ['http:','htt
 const link = (value, name) => safeLink(value) ? `<a href="${esc(safeLink(value))}" target="_blank" rel="noopener noreferrer" class="link">${esc(name || value)} ${iconSvg('arrow',13)}</a>` : '—';
 const options = (items, selected) => items.map(([value,text]) => `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(text)}</option>`).join('');
 const statusBadge = value => `<span class="badge ${value === 'incerto' || value === 'sem_site_identificado' ? 'warning' : value === 'loja_virtual' ? 'dim' : ''}">${esc(label(statuses,value))}</span>`;
+function normalizeCrmFilters(){
+  if(!state.crmFilters||typeof state.crmFilters!=='object'||Array.isArray(state.crmFilters))state.crmFilters={q:'',quick:'all'};
+  if(typeof state.crmFilters.q!=='string')state.crmFilters.q='';
+  if(!['all','no_site','tier3','tier2','score50','phone'].includes(state.crmFilters.quick))state.crmFilters.quick='all';
+  return state.crmFilters;
+}
 
 async function api(path, opts={}) {
   const headers = { ...(opts.body ? {'Content-Type':'application/json'} : {}), ...(state.user?.csrf ? {'X-CSRF-Token':state.user.csrf} : {}) };
@@ -328,6 +334,7 @@ function localDetails(data,tab){
 }
 
 async function crmPage(){
+  normalizeCrmFilters();
   title('CRM','Pipeline, scripts de venda, criação de sites e reuniões.');
   const el=document.getElementById('content');
   el.innerHTML=`<div class="section-title"><div><h1>CRM comercial</h1><p>Organize o próximo passo de cada oportunidade.</p></div></div><nav class="crm-workspace-tabs" aria-label="Áreas do CRM">${[['pipeline','Funil'],['objections','Objeções'],['sites','Criação de sites'],['agenda','Agenda']].map(([id,name])=>`<button class="crm-workspace-tab ${state.crmTab===id?'active':''}" data-crm-tab="${id}">${esc(name)}</button>`).join('')}</nav><div id="crm-workspace"></div>`;
@@ -337,6 +344,7 @@ async function crmPage(){
   return agendaPage();
 }
 async function crmPipelinePage(){
+  normalizeCrmFilters();
   const mount=document.getElementById('crm-workspace');if(!mount)return;
   mount.innerHTML=`<div class="section-title"><div><h2>Funil de vendas</h2><p>Busque por empresa, nicho ou segmento. Os filtros funcionam nos dois formatos.</p></div><div class="view-switch" role="group" aria-label="Formato do funil"><button class="btn ${state.crmLayout==='board'?'primary':''}" data-crm-layout="board">${iconSvg('kanban',16)} Kanban</button><button class="btn ${state.crmLayout==='list'?'primary':''}" data-crm-layout="list">${iconSvg('list',16)} Lista</button></div></div><form id="crm-filter-form" class="crm-toolbar"><label class="crm-search-box">${iconSvg('search',17)}<input type="search" name="q" value="${esc(state.crmFilters.q)}" placeholder="Buscar empresa, nicho ou segmento" aria-label="Buscar empresa, nicho ou segmento"></label><button class="btn" type="submit">Buscar</button><button class="btn ghost" type="button" data-action="crm-clear-search">Limpar busca</button></form><div class="crm-quick-filters" role="group" aria-label="Filtros rápidos do funil">${[['all','Todos'],['no_site','Sem site'],['tier3','Tier 3 (Quente)'],['tier2','Tier 2 (Morno)'],['score50','Score 50+'],['phone','Com telefone']].map(([id,name])=>`<button class="crm-filter-chip ${state.crmFilters.quick===id?'active':''}" title="${id==='tier3'?'Score do lead igual ou superior a 70':id==='tier2'?'Score do lead de 50 a 69':''}" data-crm-quick="${id}">${esc(name)}</button>`).join('')}</div><div class="crm-results-count" id="crm-results-count"></div><div id="crm-view"></div>`;
   try{const query=new URLSearchParams();if(state.crmFilters.q)query.set('q',state.crmFilters.q);if(state.crmFilters.quick==='no_site')query.set('no_site','1');if(state.crmFilters.quick==='tier3')query.set('tier','3');if(state.crmFilters.quick==='tier2')query.set('tier','2');if(state.crmFilters.quick==='score50')query.set('score_min','50');if(state.crmFilters.quick==='phone')query.set('with_phone','1');const queryString=query.toString();const data=await api('/leads'+(queryString?'?'+queryString:''));state.leads=data.items;const count=document.getElementById('crm-results-count');if(count)count.textContent=`${data.total} lead${data.total===1?'':'s'} encontrados${data.total>300?' · exibindo até 300 por vez':''}`;renderCrmView();}
@@ -409,6 +417,7 @@ function renderAgenda(){
   mount.innerHTML=`<section class="panel agenda-panel"><div class="agenda-heading"><div><span class="dash-eyebrow">REUNIÕES E RETORNOS</span><h2>Agenda comercial</h2><p class="help">Calendário salvo neste CRM, sincronizado pelo banco de dados.</p></div><div class="agenda-month-tools"><button class="btn" data-agenda-month="-1" aria-label="Mês anterior">‹</button><strong>${esc(monthName)}</strong><button class="btn" data-agenda-month="1" aria-label="Próximo mês">›</button></div></div><div class="calendar-grid calendar-weekdays">${['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'].map(x=>`<span>${x}</span>`).join('')}</div><div class="calendar-grid">${cells}</div></section><div class="agenda-columns"><section class="panel"><div class="panel-head"><div><h2>${esc(selectedDate.toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long'}))}</h2><small>${items.length} reunião${items.length===1?'':'ões'}</small></div><button class="btn" data-action="new-appointment">+ Agendar</button></div>${items.length?items.map(a=>`<article class="appointment-card"><div class="appointment-time">${esc(new Date(a.starts_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}<small>${a.duration_minutes} min</small></div><div class="appointment-info"><strong>${esc(a.title)}</strong><small>${esc(a.lead_name||'Lead')}</small>${a.notes?`<p>${esc(a.notes)}</p>`:''}<span class="badge ${a.status==='cancelled'?'warning':a.status==='completed'?'dim':''}">${a.status==='cancelled'?'Cancelada':a.status==='completed'?'Concluída':'Agendada'}</span></div><div class="appointment-actions"><button class="btn" data-edit-appointment="${a.id}">Editar</button>${a.meet_url?`<a class="btn primary" href="${esc(a.meet_url)}" target="_blank" rel="noopener noreferrer">Entrar no Meet ↗</a>`:`<a class="btn" href="https://meet.google.com/new" target="_blank" rel="noopener noreferrer">Abrir Google Meet ↗</a>`}<button class="btn danger" data-delete-appointment="${a.id}" aria-label="Excluir reunião">Excluir</button></div></article>`).join(''):'<div class="empty">Sem reuniões neste dia. Use “Agendar” para marcar uma conversa.</div>'}</section><section class="panel agenda-form-panel"><div class="panel-head"><div><h2>${editing?'Editar reunião':'Nova reunião'}</h2><p class="help">${editing?'Atualize horário, lead, anotações e link.':'Salve data e horário; você pode inserir o link do Meet depois.'}</p></div>${editing?`<button class="btn ghost" data-action="cancel-edit-appointment">Cancelar edição</button>`:''}</div><form id="appointment-form" class="form-grid"><input type="hidden" name="id" value="${editing?.id||''}"><label class="field span2">Lead<select name="lead_id" required><option value="">Escolha a empresa</option>${state.leads.map(l=>`<option value="${l.id}" ${Number(l.id)===Number(editing?.lead_id||state.siteLeadId)?'selected':''}>${esc(l.name)} · ${esc([l.city,l.state].filter(Boolean).join('/'))}</option>`).join('')}</select></label><label class="field span2">Assunto<input name="title" maxlength="160" required value="${esc(editing?.title||'Reunião de apresentação')}"></label><label class="field">Data e horário<input type="datetime-local" name="starts_at_local" required value="${esc(dateInput)}"></label><label class="field">Duração<select name="duration_minutes">${[[15,'15 minutos'],[30,'30 minutos'],[45,'45 minutos'],[60,'1 hora'],[90,'1h30'],[120,'2 horas']].map(([v,t])=>`<option value="${v}" ${Number(editing?.duration_minutes||30)===v?'selected':''}>${t}</option>`).join('')}</select></label><label class="field span2">Link do Google Meet (opcional)<input type="url" name="meet_url" placeholder="https://meet.google.com/abc-defg-hij" value="${esc(editing?.meet_url||'')}"></label><label class="field span2">Anotações<textarea name="notes" rows="3" maxlength="2000" placeholder="Pauta, necessidades e próximos passos">${esc(editing?.notes||'')}</textarea></label><div class="button-row span2"><button class="btn primary" type="submit">${editing?'Salvar alterações':'Salvar reunião'}</button><a class="btn" href="https://meet.google.com/new" target="_blank" rel="noopener noreferrer">Criar sala no Google Meet ↗</a></div></form><p class="help">O botão abre o Google Meet para criar uma sala. Cole o link gerado no campo antes de salvar. O calendário do CRM não sincroniza automaticamente com o Google Calendar.</p></section></div>`;
 }
 function renderCrmView(){
+  normalizeCrmFilters();
   const mount=document.getElementById('crm-view');if(!mount)return;
   if(state.crmLayout==='board'){
     mount.innerHTML=`<div class="kanban" id="kanban">${stages.map(([code,name])=>{const items=state.leads.filter(l=>l.stage===code);return `<section class="column" data-drop="${code}"><div class="column-head">${esc(name)}<span>${items.length}</span></div>${items.map(l=>`<article class="kanban-card" draggable="true" data-drag="${l.id}"><button class="link" data-lead="${l.id}" style="padding:0;text-align:left"><strong>${esc(l.name)}</strong></button><small>${esc(l.category||'Sem segmento')} · ${esc(l.city||'')}</small>${scoreBadge(l.score)}</article>`).join('')}</section>`}).join('')}</div>`;return;
@@ -568,7 +577,7 @@ async function handleFormSubmit(form){
   if(form.id==='global-search-form'){
     state.filters={...state.filters,q:obj.q.trim()};navigate('leads');return;
   }
-  if(form.id==='crm-filter-form'){state.crmFilters.q=obj.q.trim();await crmPage();return}
+  if(form.id==='crm-filter-form'){normalizeCrmFilters();state.crmFilters.q=String(obj.q||'').trim();await crmPage();return}
   try{
     if(form.id==='objection-script-form'){
       const saved=await post('/sales-scripts',obj);
@@ -626,7 +635,7 @@ document.addEventListener('click',async event=>{
   if(hit.dataset.deleteAppointment){if(!confirm('Excluir esta reunião da agenda?'))return;try{await api('/appointments/'+hit.dataset.deleteAppointment,{method:'DELETE'});state.editAppointmentId=0;toast('Reunião excluída da agenda.');await loadAgenda()}catch(e){toast(e.message,true)}return}
   if(hit.dataset.crmLayout){state.crmLayout=hit.dataset.crmLayout;try{localStorage.setItem('crm-layout',state.crmLayout)}catch{}document.querySelectorAll('[data-crm-layout]').forEach(button=>button.classList.toggle('primary',button.dataset.crmLayout===state.crmLayout));renderCrmView();return}
   if(hit.dataset.pickNiche){const field=document.querySelector('#campaign-form [name="niche"]');if(field)field.value=hit.dataset.pickNiche;document.getElementById('drawer-mount').innerHTML='';field?.focus();return}
-  if(hit.dataset.crmQuick){state.crmFilters.quick=hit.dataset.crmQuick;if(hit.dataset.crmQuick==='all')state.crmFilters.q='';await crmPage();return}
+  if(hit.dataset.crmQuick){normalizeCrmFilters();state.crmFilters.quick=hit.dataset.crmQuick;if(hit.dataset.crmQuick==='all')state.crmFilters.q='';await crmPage();return}
   if(hit.dataset.editNiche){openNicheManager(hit.dataset.editNiche);return}
   if(hit.dataset.deleteNiche){if(!confirm('Excluir este nicho personalizado da biblioteca? Campanhas anteriores não serão alteradas.'))return;try{await api('/niches/'+hit.dataset.deleteNiche,{method:'DELETE'});toast('Nicho removido da biblioteca.');openNicheManager()}catch(e){toast(e.message,true)}return}
   if(hit.dataset.lead){openLead(Number(hit.dataset.lead));return}
@@ -673,7 +682,7 @@ document.addEventListener('click',async event=>{
     case 'filter':state.filters={...state.filters,q:document.getElementById('lead-q').value.trim(),digital_status:document.getElementById('lead-status').value,stage:document.getElementById('lead-stage').value};loadLeads();break;
     case 'clear-filter':state.filters={};leadsPage();break;
     case 'toggle-campaign-filter':loadCampaignLeadFilters();break;
-    case 'crm-clear-search':state.crmFilters.q='';crmPage();break;
+    case 'crm-clear-search':normalizeCrmFilters();state.crmFilters.q='';crmPage();break;
     case 'new-appointment':state.editAppointmentId=0;renderAgenda();document.querySelector('#appointment-form [name="title"]')?.focus();break;
     case 'cancel-edit-appointment':state.editAppointmentId=0;renderAgenda();break;
     case 'copy-site-work':try{await navigator.clipboard.writeText(document.getElementById('site-work-prompt').value);toast('Briefing copiado. Revise os dados na plataforma escolhida.')}catch{toast('Não foi possível copiar automaticamente.',true)}break;
