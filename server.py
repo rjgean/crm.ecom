@@ -1257,94 +1257,279 @@ class Handler(BaseHTTPRequestHandler):
                         (stage, key, title, script, now()))
         return self.send({"stage": stage, "objection_key": key, "title": title, "body": script, "updated_at": now()})
 
+    def cal_event_types(self):
+        response = cal_request_json("/v2/event-types")
+        data = response.get("data", response) if isinstance(response, dict) else response
+        if isinstance(data, dict):
+            rows = data.get("eventTypes") or data.get("items") or data.get("data") or []
+        else:
+            rows = data
+        if not isinstance(rows, list):
+            rows = []
+        result = []
+        for item in rows:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            result.append({
+                "id": item.get("id"),
+                "title": item.get("title") or item.get("name") or item.get("slug") or f"Evento {item.get('id')}",
+                "slug": item.get("slug"),
+                "length_minutes": item.get("lengthInMinutes") or item.get("length") or 30,
+                "hidden": bool(item.get("hidden")),
+            })
+        return self.send([item for item in result if not item["hidden"]])
+
+    def cal_slots(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        try:
+            event_type_id = int((query.get("event_type_id") or [""])[0])
+        except (ValueError, TypeError):
+            raise ApiError("Selecione um tipo de reunião do Cal.com")
+        start = (query.get("start") or [""])[0].strip()
+        end = (query.get("end") or [""])[0].strip()
+        time_zone = (query.get("time_zone") or ["America/Sao_Paulo"])[0].strip() or "America/Sao_Paulo"
+        try:
+            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        except ValueError:
+            raise ApiError("Período de disponibilidade inválido")
+        if end_dt <= start_dt or end_dt - start_dt > timedelta(days=31):
+            raise ApiError("Consulte um período entre 1 hora e 31 dias")
+        base = {"eventTypeId": event_type_id, "timeZone": time_zone}
+        try:
+            response = cal_request_json("/v2/slots", query={**base, "startTime": start, "endTime": end})
+        except ApiError as exc:
+            if exc.status != 400:
+                raise
+            response = cal_request_json("/v2/slots", query={**base, "start": start, "end": end})
+        data = response.get("data", response) if isinstance(response, dict) else response
+        slots = []
+        if isinstance(data, dict):
+            for day, values in data.items():
+                if not isinstance(values, list):
+                    continue
+                for slot in values:
+                    value = slot.get("start") if isinstance(slot, dict) else slot
+                    if value:
+                        slots.append({"start": value, "day": day})
+        elif isinstance(data, list):
+            for slot in data:
+                value = slot.get("start") if isinstance(slot, dict) else slot
+                if value:
+                    slots.append({"start": value})
+        slots.sort(key=lambda item: item["start"])
+        return self.send({"slots": slots[:300], "time_zone": time_zone})
+
     def appointments(self):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         start = (query.get("start") or [""])[0]
         end = (query.get("end") or [""])[0]
         lead_id = (query.get("lead_id") or [""])[0]
-        if start and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start): raise ApiError("Data inicial inválida")
-        if end and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end): raise ApiError("Data final inválida")
+        if start and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start):
+            raise ApiError("Data inicial inválida")
+        if end and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end):
+            raise ApiError("Data final inválida")
         clauses, params = [], []
-        if start: clauses.append("substr(a.starts_at,1,10)>=?"); params.append(start)
-        if end: clauses.append("substr(a.starts_at,1,10)<=?"); params.append(end)
+        if start:
+            clauses.append("substr(a.starts_at,1,10)>=?")
+            params.append(start)
+        if end:
+            clauses.append("substr(a.starts_at,1,10)<=?")
+            params.append(end)
         if lead_id:
-            try: params.append(int(lead_id))
-            except ValueError: raise ApiError("Lead inválido")
+            try:
+                params.append(int(lead_id))
+            except ValueError:
+                raise ApiError("Lead inválido")
             clauses.append("a.lead_id=?")
         sql = "SELECT a.*,l.name AS lead_name FROM appointments a JOIN leads l ON l.id=a.lead_id"
-        if clauses: sql += " WHERE " + " AND ".join(clauses)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY a.starts_at ASC LIMIT 500"
-        with db() as con: rows = [dict(row) for row in con.execute(sql, params)]
+        with db() as con:
+            rows = [dict(row) for row in con.execute(sql, params)]
         return self.send(rows)
 
     def appointment_values(self, body, partial=False, previous=None):
         source = {**(previous or {}), **body}
         values = {}
         if not partial or "lead_id" in body:
-            try: values["lead_id"] = int(source.get("lead_id"))
-            except (ValueError, TypeError): raise ApiError("Escolha uma empresa para a reunião")
+            try:
+                values["lead_id"] = int(source.get("lead_id"))
+            except (ValueError, TypeError):
+                raise ApiError("Escolha uma empresa para a reunião")
         if not partial or "title" in body:
             title = str(source.get("title") or "").strip()
-            if not title or len(title) > 160: raise ApiError("Informe um título de até 160 caracteres")
+            if not title or len(title) > 160:
+                raise ApiError("Informe um título de até 160 caracteres")
             values["title"] = title
         if not partial or "starts_at" in body:
             starts = str(source.get("starts_at") or "").strip()
             try:
                 parsed = datetime.fromisoformat(starts.replace("Z", "+00:00"))
-                if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=timezone.utc)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
                 starts = parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
-            except ValueError: raise ApiError("Informe uma data e horário válidos")
+            except ValueError:
+                raise ApiError("Informe uma data e horário válidos")
             values["starts_at"] = starts
         if not partial or "duration_minutes" in body:
-            try: duration = int(source.get("duration_minutes", 30))
-            except (ValueError, TypeError): raise ApiError("Duração inválida")
-            if not 15 <= duration <= 240: raise ApiError("A duração deve ser de 15 minutos a 4 horas")
+            try:
+                duration = int(source.get("duration_minutes", 30))
+            except (ValueError, TypeError):
+                raise ApiError("Duração inválida")
+            if not 15 <= duration <= 240:
+                raise ApiError("A duração deve ser de 15 minutos a 4 horas")
             values["duration_minutes"] = duration
         if not partial or "meet_url" in body:
             meet = str(source.get("meet_url") or "").strip()
             if meet:
                 parsed = urllib.parse.urlsplit(meet)
-                if parsed.scheme != "https" or parsed.hostname != "meet.google.com" or parsed.username or parsed.password:
-                    raise ApiError("Use um link HTTPS do Google Meet")
+                if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                    raise ApiError("Use um link HTTPS válido para a reunião")
             values["meet_url"] = meet or None
         if not partial or "notes" in body:
             notes = str(source.get("notes") or "").strip()
-            if len(notes) > 2000: raise ApiError("As observações devem ter até 2.000 caracteres")
+            if len(notes) > 2000:
+                raise ApiError("As observações devem ter até 2.000 caracteres")
             values["notes"] = notes or None
         if not partial or "status" in body:
             status = str(source.get("status") or "scheduled")
-            if status not in ("scheduled", "completed", "cancelled"): raise ApiError("Status de reunião inválido")
+            if status not in ("scheduled", "completed", "cancelled"):
+                raise ApiError("Status de reunião inválido")
             values["status"] = status
+        if not partial or "attendee_name" in body:
+            attendee_name = str(source.get("attendee_name") or "").strip()
+            if len(attendee_name) > 160:
+                raise ApiError("O nome do participante deve ter até 160 caracteres")
+            values["attendee_name"] = attendee_name or None
+        if not partial or "attendee_email" in body:
+            attendee_email = str(source.get("attendee_email") or "").strip().lower()
+            if attendee_email and (len(attendee_email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", attendee_email)):
+                raise ApiError("Informe um e-mail válido para o participante")
+            values["attendee_email"] = attendee_email or None
+        if not partial or "cal_event_type_id" in body:
+            raw_event = source.get("cal_event_type_id")
+            if raw_event in (None, "", 0, "0"):
+                values["cal_event_type_id"] = None
+            else:
+                try:
+                    values["cal_event_type_id"] = int(raw_event)
+                except (ValueError, TypeError):
+                    raise ApiError("Tipo de reunião do Cal.com inválido")
         return values
 
     def create_appointment(self):
         body = self.json_body()
         values = self.appointment_values(body)
         stamp = now()
+        cal_uid = cal_status = None
+        if values.get("cal_event_type_id"):
+            if not values.get("attendee_name") or not values.get("attendee_email"):
+                raise ApiError("Informe nome e e-mail do participante para agendar pelo Cal.com")
+            remote = cal_booking_data(cal_request_json("/v2/bookings", {
+                "start": values["starts_at"].replace("+00:00", "Z"),
+                "eventTypeId": values["cal_event_type_id"],
+                "attendee": {
+                    "name": values["attendee_name"],
+                    "email": values["attendee_email"],
+                    "timeZone": "America/Sao_Paulo",
+                    "language": "pt-BR",
+                },
+                "metadata": {"source": "crm-ecom", "leadId": str(values["lead_id"])},
+            }))
+            cal_uid = str(remote.get("uid") or "").strip() or None
+            if not cal_uid:
+                raise ApiError("O Cal.com respondeu sem UID da reserva. Tente novamente.", 502)
+            cal_status = str(remote.get("status") or "accepted")
+            remote_start = remote.get("start")
+            if remote_start:
+                values["starts_at"] = str(remote_start).replace("Z", "+00:00")
+            if remote.get("duration"):
+                try:
+                    values["duration_minutes"] = int(remote["duration"])
+                except (ValueError, TypeError):
+                    pass
+            meeting = remote.get("meetingUrl") or remote.get("location")
+            if isinstance(meeting, str) and meeting.startswith("https://"):
+                values["meet_url"] = meeting
         with db() as con:
-            if not con.execute("SELECT id FROM leads WHERE id=? AND blocked=0", (values["lead_id"],)).fetchone(): raise ApiError("Lead não encontrado", 404)
-            cur = con.execute("INSERT INTO appointments(lead_id,title,starts_at,duration_minutes,meet_url,notes,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                              tuple(values[k] for k in ("lead_id","title","starts_at","duration_minutes","meet_url","notes","status")) + (stamp,stamp))
+            if not con.execute("SELECT id FROM leads WHERE id=? AND blocked=0", (values["lead_id"],)).fetchone():
+                raise ApiError("Lead não encontrado", 404)
+            cur = con.execute(
+                "INSERT INTO appointments(lead_id,title,starts_at,duration_minutes,meet_url,notes,status,attendee_name,attendee_email,cal_event_type_id,cal_booking_uid,cal_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    values["lead_id"], values["title"], values["starts_at"], values["duration_minutes"],
+                    values.get("meet_url"), values.get("notes"), values["status"],
+                    values.get("attendee_name"), values.get("attendee_email"), values.get("cal_event_type_id"),
+                    cal_uid, cal_status, stamp, stamp,
+                ),
+            )
             appointment_id = cur.lastrowid
-            con.execute("INSERT INTO activities(lead_id,kind,detail,created_at) VALUES(?,?,?,?)", (values["lead_id"], "reuniao", "Reunião agendada: " + values["title"], stamp))
-        return self.send({"id": appointment_id, **values, "created_at": stamp, "updated_at": stamp}, 201)
+            detail = "Reunião agendada via Cal.com: " if cal_uid else "Reunião agendada: "
+            con.execute(
+                "INSERT INTO activities(lead_id,kind,detail,created_at) VALUES(?,?,?,?)",
+                (values["lead_id"], "reuniao", detail + values["title"], stamp),
+            )
+            result = rowdict(con.execute(
+                "SELECT a.*,l.name AS lead_name FROM appointments a JOIN leads l ON l.id=a.lead_id WHERE a.id=?",
+                (appointment_id,),
+            ).fetchone())
+        return self.send(result, 201)
 
     def update_appointment(self, appointment_id):
         body = self.json_body()
         with db() as con:
             old = rowdict(con.execute("SELECT * FROM appointments WHERE id=?", (appointment_id,)).fetchone())
-            if not old: raise ApiError("Reunião não encontrada", 404)
+            if not old:
+                raise ApiError("Reunião não encontrada", 404)
             values = self.appointment_values(body, partial=True, previous=old)
-            if "lead_id" in values and not con.execute("SELECT id FROM leads WHERE id=? AND blocked=0", (values["lead_id"],)).fetchone(): raise ApiError("Lead não encontrado", 404)
-            values["updated_at"] = now()
-            con.execute("UPDATE appointments SET " + ",".join(f"{key}=?" for key in values) + " WHERE id=?", [*values.values(), appointment_id])
-            result = rowdict(con.execute("SELECT a.*,l.name AS lead_name FROM appointments a JOIN leads l ON l.id=a.lead_id WHERE a.id=?", (appointment_id,)).fetchone())
+            if "lead_id" in values and not con.execute("SELECT id FROM leads WHERE id=? AND blocked=0", (values["lead_id"],)).fetchone():
+                raise ApiError("Lead não encontrado", 404)
+        if old.get("cal_booking_uid") and values.get("starts_at") and values["starts_at"] != old.get("starts_at"):
+            remote = cal_booking_data(cal_request_json(
+                f"/v2/bookings/{urllib.parse.quote(str(old['cal_booking_uid']), safe='')}/reschedule",
+                {
+                    "start": values["starts_at"].replace("+00:00", "Z"),
+                    "reschedulingReason": "Horário alterado pelo CRM ECOM",
+                },
+            ))
+            new_uid = str(remote.get("uid") or "").strip()
+            if new_uid:
+                values["cal_booking_uid"] = new_uid
+            if remote.get("status"):
+                values["cal_status"] = str(remote["status"])
+            meeting = remote.get("meetingUrl") or remote.get("location")
+            if isinstance(meeting, str) and meeting.startswith("https://"):
+                values["meet_url"] = meeting
+        values["updated_at"] = now()
+        with db() as con:
+            con.execute(
+                "UPDATE appointments SET " + ",".join(f"{key}=?" for key in values) + " WHERE id=?",
+                [*values.values(), appointment_id],
+            )
+            result = rowdict(con.execute(
+                "SELECT a.*,l.name AS lead_name FROM appointments a JOIN leads l ON l.id=a.lead_id WHERE a.id=?",
+                (appointment_id,),
+            ).fetchone())
         return self.send(result)
 
     def delete_appointment(self, appointment_id):
         with db() as con:
-            count = con.execute("DELETE FROM appointments WHERE id=?", (appointment_id,)).rowcount
-        if not count: raise ApiError("Reunião não encontrada", 404)
+            old = rowdict(con.execute("SELECT * FROM appointments WHERE id=?", (appointment_id,)).fetchone())
+        if not old:
+            raise ApiError("Reunião não encontrada", 404)
+        if old.get("cal_booking_uid"):
+            cal_request_json(
+                f"/v2/bookings/{urllib.parse.quote(str(old['cal_booking_uid']), safe='')}/cancel",
+                {"cancellationReason": "Reunião cancelada pelo CRM ECOM"},
+            )
+        with db() as con:
+            con.execute("DELETE FROM appointments WHERE id=?", (appointment_id,))
+            con.execute(
+                "INSERT INTO activities(lead_id,kind,detail,created_at) VALUES(?,?,?,?)",
+                (old["lead_id"], "reuniao_cancelada", "Reunião cancelada: " + old["title"], now()),
+            )
         return self.send({"ok": True})
 
     def dashboard(self):
