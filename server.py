@@ -83,7 +83,7 @@ def turso_credentials():
     return url, token
 
 
-SERVICE_ENV = {"apify": "APIFY_TOKEN", "firecrawl": "FIRECRAWL_API_KEY", "groq": "GROQ_API_KEY", "resend": "RESEND_API_KEY"}
+SERVICE_ENV = {"apify": "APIFY_TOKEN", "firecrawl": "FIRECRAWL_API_KEY", "groq": "GROQ_API_KEY", "resend": "RESEND_API_KEY", "calcom": "CAL_API_KEY"}
 
 
 def public_host(host):
@@ -791,7 +791,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get("Origin") != "https://" + host:
                     raise ApiError("Origem da requisição inválida", 403)
             if method != "GET" and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"]): raise ApiError("Sessão inválida; recarregue a página", 403)
-            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "role": user["role"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "google": bool(user.get("google")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "resend": bool(service_key("resend")), "serverless": bool(os.environ.get("VERCEL"))})
+            if method == "GET" and path == "/api/me": return self.send({"email": user["email"], "role": user["role"], "csrf": user["csrf"], "sso": bool(user.get("sso")), "google": bool(user.get("google")), "apify": bool(service_key("apify")), "firecrawl": bool(service_key("firecrawl")), "groq": bool(service_key("groq")), "resend": bool(service_key("resend")), "calcom": bool(service_key("calcom")), "serverless": bool(os.environ.get("VERCEL"))})
             if path == "/api/access/collaborators":
                 if user["role"] != "admin": raise ApiError("Apenas o administrador pode gerenciar acessos", 403)
                 if method == "GET": return self.list_collaborators()
@@ -825,7 +825,7 @@ class Handler(BaseHTTPRequestHandler):
                 try: save_service_key(service, token)
                 except RuntimeError as exc: raise ApiError(str(exc), 503)
                 return self.send({"configured": True})
-            match = re.fullmatch(r"/api/integrations/(apify|firecrawl|groq|resend)", path)
+            match = re.fullmatch(r"/api/integrations/(apify|firecrawl|groq|resend|calcom)", path)
             if method == "DELETE" and match:
                 if user["role"] != "admin": raise ApiError("Apenas administradores podem alterar credenciais", 403)
                 with db() as con: con.execute("DELETE FROM integrations WHERE name=?", (match[1],))
@@ -857,6 +857,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/appointments":
                 if method == "GET": return self.appointments()
                 if method == "POST": return self.create_appointment()
+            if method == "GET" and path == "/api/calcom/event-types": return self.cal_event_types()
+            if method == "GET" and path == "/api/calcom/slots": return self.cal_slots()
             match = re.fullmatch(r"/api/appointments/(\d+)", path)
             if match:
                 if method == "PATCH": return self.update_appointment(int(match[1]))
