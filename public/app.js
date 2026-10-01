@@ -437,6 +437,69 @@ function renderSitesWorkspace(){
 function firstWeekdayMonday(dateObj){return (dateObj.getDay()+6)%7}
 function calendarRange(month){const first=new Date(month.getFullYear(),month.getMonth(),1);const start=new Date(first);start.setDate(first.getDate()-firstWeekdayMonday(first));const end=new Date(start);end.setDate(start.getDate()+41);return {start,end}}
 function appointmentDayKey(value){return localDateString(value)}
+function calAgendaNotice(){
+  if(!state.user?.calcom)return '<div class="notice"><strong>Cal.com não conectado.</strong> Salve a chave em Configurações para consultar horários e criar reservas.</div>';
+  if(state.calError)return '<div class="notice"><strong>Cal.com conectado, mas a agenda não carregou.</strong> '+esc(state.calError)+'</div>';
+  return '<div class="notice good"><strong>Cal.com conectado.</strong> Você pode consultar horários livres e criar reservas diretamente nesta agenda.</div>';
+}
+function enhanceCalAgenda(editing){
+  const mount=document.getElementById('crm-workspace'),form=document.getElementById('appointment-form');
+  if(!mount||!form)return;
+  const notice=document.createElement('div');
+  notice.innerHTML=calAgendaNotice();
+  const firstPanel=mount.querySelector('.agenda-panel');
+  if(firstPanel)firstPanel.before(notice.firstElementChild);
+  if(!state.user?.calcom)return;
+  const startsLabel=form.querySelector('[name="starts_at_local"]')?.closest('label');
+  if(!startsLabel)return;
+  const wrap=document.createElement('div');
+  wrap.className='span2 calcom-booking-box';
+  const currentEvent=editing?.cal_event_type_id||'';
+  const optionsHtml=(state.calEventTypes||[]).map(function(item){
+    const selected=String(item.id)===String(currentEvent)?' selected':'';
+    return '<option value="'+esc(item.id)+'"'+selected+'>'+esc(item.title)+' · '+esc(item.length_minutes||30)+' min</option>';
+  }).join('');
+  const locked=Boolean(editing?.cal_booking_uid);
+  wrap.innerHTML=
+    '<div class="calcom-booking-head"><div><strong>Cal.com</strong><small>'+(locked?'Reserva sincronizada. Alterar o horário reagenda no Cal.com.':'Escolha um tipo de evento para criar a reserva no Cal.com.')+'</small></div><span class="badge">'+(locked?'Sincronizado':'Disponível')+'</span></div>'+
+    '<div class="form-grid">'+
+      '<label class="field span2">Tipo de reunião<select name="cal_event_type_id" '+(locked?'disabled':'')+'><option value="">Somente CRM · não criar no Cal.com</option>'+optionsHtml+'</select>'+(locked?'<input type="hidden" name="cal_event_type_id" value="'+esc(currentEvent)+'">':'')+'</label>'+
+      '<label class="field">Nome do participante<input name="attendee_name" maxlength="160" placeholder="Nome do cliente" value="'+esc(editing?.attendee_name||'')+'"></label>'+
+      '<label class="field">E-mail do participante<input name="attendee_email" type="email" maxlength="254" placeholder="cliente@empresa.com" value="'+esc(editing?.attendee_email||'')+'"></label>'+
+    '</div>'+
+    '<div class="button-row"><button class="btn" type="button" data-action="load-cal-slots">Ver horários livres</button><small class="help">Os horários vêm da disponibilidade configurada no Cal.com.</small></div>'+
+    '<div id="cal-slot-results" class="cal-slot-results"></div>';
+  startsLabel.before(wrap);
+}
+function renderCalSlots(){
+  const box=document.getElementById('cal-slot-results');if(!box)return;
+  const slots=state.calSlots||[];
+  if(!slots.length){box.innerHTML='<small class="help">Nenhum horário carregado ainda.</small>';return}
+  box.innerHTML='<div class="cal-slot-grid">'+slots.slice(0,48).map(function(slot){
+    const d=new Date(slot.start);
+    const label=d.toLocaleString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    return '<button class="cal-slot" type="button" data-action="select-cal-slot" data-slot="'+esc(slot.start)+'">'+esc(label)+'</button>';
+  }).join('')+'</div>'+(slots.length>48?'<small class="help">Mostrando 48 de '+slots.length+' horários disponíveis.</small>':'');
+}
+async function loadCalSlots(){
+  const form=document.getElementById('appointment-form');if(!form)return;
+  const eventId=form.elements.cal_event_type_id?.value;
+  if(!eventId)return toast('Escolha um tipo de reunião do Cal.com primeiro.',true);
+  const input=form.elements.starts_at_local;
+  const base=input?.value?new Date(input.value):new Date();
+  if(Number.isNaN(base.getTime()))return toast('Informe uma data válida.',true);
+  const start=new Date(base);start.setHours(0,0,0,0);
+  const nowDate=new Date();if(start<nowDate)start.setTime(nowDate.getTime());
+  const end=new Date(start);end.setDate(end.getDate()+14);
+  const box=document.getElementById('cal-slot-results');if(box)box.innerHTML='<small class="help">Consultando disponibilidade no Cal.com…</small>';
+  try{
+    const q=new URLSearchParams({event_type_id:eventId,start:start.toISOString(),end:end.toISOString(),time_zone:'America/Sao_Paulo'});
+    const result=await api('/calcom/slots?'+q.toString());
+    state.calSlots=result.slots||[];
+    renderCalSlots();
+    if(!state.calSlots.length)toast('Nenhum horário livre encontrado nesse período.',true);
+  }catch(e){if(box)box.innerHTML='<div class="notice">'+esc(e.message)+'</div>';toast(e.message,true)}
+}
 async function agendaPage(){
   const mount=document.getElementById('crm-workspace');if(!mount)return;
   mount.innerHTML='<section class="panel"><h2>Agenda de reuniões</h2><p class="help">Carregando calendário…</p></section>';
