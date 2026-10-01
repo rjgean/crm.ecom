@@ -219,7 +219,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY, lead_id INTEGER REFERENCES leads(id) ON DELETE CASCADE, kind TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS activities_lead_recent ON activities(lead_id,id DESC);
         CREATE TABLE IF NOT EXISTS sales_scripts(stage TEXT NOT NULL, objection_key TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(stage,objection_key));
-        CREATE TABLE IF NOT EXISTS appointments(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, title TEXT NOT NULL, starts_at TEXT NOT NULL, duration_minutes INTEGER NOT NULL DEFAULT 30, meet_url TEXT, notes TEXT, status TEXT NOT NULL DEFAULT 'scheduled', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS appointments(id INTEGER PRIMARY KEY, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, title TEXT NOT NULL, starts_at TEXT NOT NULL, duration_minutes INTEGER NOT NULL DEFAULT 30, meet_url TEXT, notes TEXT, status TEXT NOT NULL DEFAULT 'scheduled', attendee_name TEXT, attendee_email TEXT, cal_event_type_id INTEGER, cal_booking_uid TEXT, cal_status TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS appointments_starts_at_idx ON appointments(starts_at);
         CREATE INDEX IF NOT EXISTS appointments_lead_id_idx ON appointments(lead_id,starts_at);
         CREATE TABLE IF NOT EXISTS lead_lists(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
@@ -256,6 +256,17 @@ def init_db():
         campaign_columns = {row[1] for row in con.execute("PRAGMA table_info(campaigns)")}
         if "district" not in campaign_columns:
             con.execute("ALTER TABLE campaigns ADD COLUMN district TEXT NOT NULL DEFAULT ''")
+        appointment_columns = {row[1] for row in con.execute("PRAGMA table_info(appointments)")}
+        for column, ddl in (
+            ("attendee_name", "TEXT"),
+            ("attendee_email", "TEXT"),
+            ("cal_event_type_id", "INTEGER"),
+            ("cal_booking_uid", "TEXT"),
+            ("cal_status", "TEXT"),
+        ):
+            if column not in appointment_columns:
+                con.execute(f"ALTER TABLE appointments ADD COLUMN {column} {ddl}")
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS appointments_cal_booking_uid_idx ON appointments(cal_booking_uid) WHERE cal_booking_uid IS NOT NULL")
         con.execute("UPDATE users SET role='admin' WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) AND NOT EXISTS (SELECT 1 FROM users WHERE role='admin')")
         bootstrap_operator(con)
         if not os.environ.get("VERCEL"):
