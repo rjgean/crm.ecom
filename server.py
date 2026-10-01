@@ -324,6 +324,54 @@ def request_json(url, token, payload=None, timeout=35):
         return json.loads(resp.read(5_000_000))
 
 
+CAL_API_VERSION = "2026-02-25"
+
+
+def cal_request_json(path, payload=None, method=None, query=None, timeout=30):
+    token = service_key("calcom")
+    if not token:
+        raise ApiError("Configure a chave do Cal.com em Configurações.", 503)
+    url = "https://api.cal.com" + path
+    if query:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(query)
+    body = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "cal-api-version": CAL_API_VERSION,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "crm-ecom/0.1",
+        },
+        method=method or ("POST" if body is not None else "GET"),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(5_000_000)
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise ApiError("A chave do Cal.com é inválida ou não tem permissão para esta ação.", 502)
+        if exc.code == 429:
+            raise ApiError("O Cal.com limitou temporariamente as requisições. Tente novamente em instantes.", 429)
+        if exc.code == 404:
+            raise ApiError("O recurso solicitado não foi encontrado no Cal.com.", 404)
+        if exc.code == 400:
+            raise ApiError("O Cal.com rejeitou os dados do agendamento. Confira o tipo de evento, horário e participante.", 400)
+        raise ApiError(f"O Cal.com respondeu HTTP {exc.code}.", 502)
+    except (urllib.error.URLError, TimeoutError):
+        raise ApiError("Não foi possível conectar ao Cal.com agora. Tente novamente.", 503)
+
+
+def cal_booking_data(response):
+    data = response.get("data", response) if isinstance(response, dict) else response
+    if isinstance(data, list):
+        return data[0] if data else {}
+    return data if isinstance(data, dict) else {}
+
+
 def apify_actor_input(campaign):
     location = ", ".join(part for part in (campaign["city"], campaign.get("district"), campaign["state"], "Brasil") if part)
     return {
