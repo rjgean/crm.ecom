@@ -32,6 +32,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1" if os.environ.get("VERCEL") else "0") == "1"
 STAGES = ["novo", "pesquisado", "qualificado", "contato", "respondeu", "reuniao", "proposta", "negociacao", "site", "ganho", "perdido"]
 STATUSES = ["incerto", "sem_site_identificado", "apenas_redes", "site_sem_loja", "marketplace", "loja_virtual"]
+OFFERS = ["site", "catalogo", "nuvemshop", "yampi", "nfc_qr"]
 OBJECTION_TYPES = {
     "price": "Está caro / não tenho esse dinheiro",
     "think": "Vou pensar / falar com meu sócio ou família",
@@ -2062,6 +2063,7 @@ class Handler(BaseHTTPRequestHandler):
         if not values: raise ApiError("Nenhuma alteração informada")
         if values.get("stage") and values["stage"] not in STAGES: raise ApiError("Etapa inválida")
         if values.get("digital_status") and values["digital_status"] not in STATUSES: raise ApiError("Classificação inválida")
+        if values.get("offer") and values["offer"] not in OFFERS: raise ApiError("Produto a oferecer inválido")
         for field in ("website", "instagram", "facebook", "marketplace"):
             if field in values: values[field] = clean_url(values[field]) or None
         if "phone" in values: values["phone_digits"] = phone_digits(values["phone"])
